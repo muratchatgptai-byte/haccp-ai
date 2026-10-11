@@ -1,3 +1,3 @@
 # haccp-ai
 haccp-ai
-autodeploy test
+autodeploy test 2
