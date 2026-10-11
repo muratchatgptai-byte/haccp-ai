@@ -165,7 +165,7 @@ const server =
             {
               ok: true,
               service: 'haccp-ai',
-              version: '1.0.0'
+              version: '1.1.0'
             }
           );
         }
@@ -200,6 +200,37 @@ const server =
         }
 
 
+        // ----------------------------------------------------
+        // READ-ONLY BRIDGE SELF TEST
+        // ----------------------------------------------------
+
+        if (
+          req.method === 'GET' &&
+          url.pathname === '/bridge-selftest'
+        ) {
+
+          const result =
+            await callHaccpBridge(
+              'get_batch',
+              {
+                batch_no: '1'
+              }
+            );
+
+
+          return sendJson(
+            res,
+            result.ok ? 200 : 500,
+            {
+              ok: Boolean(result.ok),
+              action: 'get_batch',
+              batch_no: '1',
+              result
+            }
+          );
+        }
+
+        
         // ----------------------------------------------------
         // TEST POST
         // ----------------------------------------------------
