@@ -1,0 +1,13 @@
+{
+  "name": "haccp-ai",
+  "version": "1.0.0",
+  "description": "HACCP AI WhatsApp service",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
