@@ -10,6 +10,12 @@ const HACCP_BRIDGE_URL =
 const HACCP_BRIDGE_SECRET =
   process.env.HACCP_BRIDGE_SECRET || '';
 
+const OPENAI_API_KEY =
+  process.env.OPENAI_API_KEY || '';
+
+const OPENAI_MODEL =
+  process.env.OPENAI_MODEL || 'gpt-6-sol';
+
 
 // ============================================================
 // BASIC JSON RESPONSE
@@ -132,6 +138,235 @@ async function callHaccpBridge(
   return data;
 }
 
+
+// ============================================================
+// HACCP MESSAGE INTERPRETER
+// ============================================================
+
+function extractOpenAIText(response) {
+
+  if (
+    response &&
+    typeof response.output_text === 'string' &&
+    response.output_text.trim()
+  ) {
+    return response.output_text.trim();
+  }
+
+
+  const parts = [];
+
+  for (const item of response?.output || []) {
+
+    if (
+      item?.type !== 'message' ||
+      !Array.isArray(item.content)
+    ) {
+      continue;
+    }
+
+    for (const part of item.content) {
+
+      if (
+        part?.type === 'output_text' &&
+        typeof part.text === 'string'
+      ) {
+        parts.push(part.text);
+      }
+    }
+  }
+
+  return parts.join('\n').trim();
+}
+
+
+function parseJsonText(text) {
+
+  let cleaned =
+    String(text || '').trim();
+
+  if (cleaned.startsWith('```')) {
+
+    cleaned =
+      cleaned
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/, '')
+        .trim();
+  }
+
+  return JSON.parse(cleaned);
+}
+
+
+async function interpretHaccpMessage(text) {
+
+  if (!OPENAI_API_KEY) {
+    throw new Error(
+      'OPENAI_API_KEY tanımlı değil'
+    );
+  }
+
+
+  const systemPrompt = `
+Sen Boşnak Tatları HACCP sisteminin komut yorumlayıcısısın.
+
+Görevin kullanıcının mesajını anlamak ve yapılandırılmış JSON üretmektir.
+
+KESİNLİKLE kayıt oluşturma, değiştirme veya silme.
+Sadece ne yapılmak istendiğini belirle.
+
+Desteklenen intent değerleri:
+
+get_batch
+create_batch
+record_process_measurement
+record_ph
+unknown
+
+Yazma işlemleri:
+create_batch
+record_process_measurement
+record_ph
+
+Bu işlemlerde:
+requires_confirmation = true
+
+Sadece okuma işlemi olan get_batch için:
+requires_confirmation = false
+
+Eksik veya belirsiz bilgi varsa tahmin etme.
+ready = false yap ve question alanında kısa bir soru üret.
+
+Yanıt SADECE geçerli JSON olsun.
+
+Format:
+
+{
+  "intent": "unknown",
+  "ready": false,
+  "requires_confirmation": false,
+  "summary": "",
+  "data": {},
+  "question": null
+}
+
+create_batch için data:
+
+{
+  "product_type": "sour_cream | stp | dessert",
+  "batch": {
+    "batch_no": "",
+    "date": "",
+    "recipe": "",
+    "product": "",
+    "grammage": "",
+    "unit": "",
+    "quantity": "",
+    "total_production": "",
+    "invoice_info": "",
+    "raw_material_lots": "",
+    "batch_count": "",
+    "output_kg": ""
+  }
+}
+
+record_process_measurement için data:
+
+{
+  "batch_no": "",
+  "process": "",
+  "measurement": "",
+  "time": "",
+  "result": ""
+}
+
+record_ph için data:
+
+{
+  "batch_no": "",
+  "ph": "",
+  "time": ""
+}
+
+get_batch için data:
+
+{
+  "batch_no": ""
+}
+
+Kullanıcı bir mesajda birden fazla işlem söylüyorsa summary alanında bunu belirt,
+ancak hiçbir işlemi kendin uygulama.
+`.trim();
+
+
+  const response =
+    await fetch(
+      'https://api.openai.com/v1/responses',
+      {
+        method: 'POST',
+
+        headers: {
+          Authorization:
+            `Bearer ${OPENAI_API_KEY}`,
+
+          'Content-Type':
+            'application/json'
+        },
+
+        body: JSON.stringify({
+          model:
+            OPENAI_MODEL,
+
+          input: [
+            {
+              role: 'system',
+              content: systemPrompt
+            },
+            {
+              role: 'user',
+              content:
+                String(text || '')
+            }
+          ],
+
+          reasoning: {
+            effort: 'medium'
+          },
+
+          max_output_tokens: 1200
+        })
+      }
+    );
+
+
+  const body =
+    await response.json();
+
+
+  if (!response.ok) {
+
+    throw new Error(
+      body?.error?.message ||
+      `OpenAI HTTP ${response.status}`
+    );
+  }
+
+
+  const outputText =
+    extractOpenAIText(body);
+
+
+  if (!outputText) {
+    throw new Error(
+      'OpenAI boş yorum döndürdü'
+    );
+  }
+
+
+  return parseJsonText(
+    outputText
+  );
+}
 
 // ============================================================
 // SERVER
