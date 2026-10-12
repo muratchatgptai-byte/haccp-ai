@@ -465,6 +465,50 @@ const server =
           );
         }
 
+
+                // ----------------------------------------------------
+        // HACCP INTERPRETER TEST
+        // ----------------------------------------------------
+
+        if (
+          req.method === 'GET' &&
+          url.pathname === '/interpret-test'
+        ) {
+
+          const text =
+            url.searchParams.get('text') || '';
+
+          if (!text.trim()) {
+
+            return sendJson(
+              res,
+              400,
+              {
+                ok: false,
+                error: 'text parametresi gerekli'
+              }
+            );
+          }
+
+
+          const result =
+            await interpretHaccpMessage(
+              text
+            );
+
+
+          return sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              input: text,
+              interpretation: result
+            }
+          );
+        }
+
+
         
         // ----------------------------------------------------
         // TEST POST
