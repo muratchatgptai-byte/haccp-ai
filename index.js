@@ -579,6 +579,23 @@ async function processHaccpMessage(
 
 
   // ----------------------------------------------------------
+  // BLOCK NEW COMMAND WHILE CONFIRMATION IS PENDING
+  // ----------------------------------------------------------
+
+  if (pending) {
+
+    return {
+      type: 'pending_confirmation',
+      summary:
+        pending.summary || '',
+      message:
+        `${pending.summary || 'Bekleyen bir işlem var.'} Önce evet veya hayır ile cevap ver.`
+    };
+  }
+
+
+  
+  // ----------------------------------------------------------
   // INTERPRET NEW MESSAGE
   // ----------------------------------------------------------
 
