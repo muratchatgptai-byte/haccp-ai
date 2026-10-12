@@ -368,6 +368,287 @@ ancak hiçbir işlemi kendin uygulama.
   );
 }
 
+
+// ============================================================
+// HACCP CONFIRMATION FLOW
+// ============================================================
+
+const pendingConfirmations =
+  new Map();
+
+
+function normalizeCommandText(text) {
+
+  return String(text || '')
+    .trim()
+    .toLocaleLowerCase('tr-TR');
+}
+
+
+function isConfirmationYes(text) {
+
+  const value =
+    normalizeCommandText(text);
+
+  return [
+    'evet',
+    'onay',
+    'onayla',
+    'tamam',
+    'kaydet',
+    'yes'
+  ].includes(value);
+}
+
+
+function isConfirmationNo(text) {
+
+  const value =
+    normalizeCommandText(text);
+
+  return [
+    'hayır',
+    'hayir',
+    'iptal',
+    'vazgeç',
+    'vazgec',
+    'no'
+  ].includes(value);
+}
+
+
+async function executeHaccpInterpretation(
+  interpretation
+) {
+
+  const intent =
+    interpretation?.intent;
+
+  const data =
+    interpretation?.data || {};
+
+
+  if (intent === 'get_batch') {
+
+    return callHaccpBridge(
+      'get_batch',
+      {
+        batch_no:
+          data.batch_no
+      }
+    );
+  }
+
+
+  if (intent === 'create_batch') {
+
+    return callHaccpBridge(
+      'create_batch',
+      {
+        product_type:
+          data.product_type,
+
+        batch:
+          data.batch
+      }
+    );
+  }
+
+
+  if (
+    intent ===
+    'record_process_measurement'
+  ) {
+
+    return callHaccpBridge(
+      'record_process_measurement',
+      {
+        batch_no:
+          data.batch_no,
+
+        process:
+          data.process,
+
+        measurement:
+          data.measurement,
+
+        time:
+          data.time,
+
+        result:
+          data.result
+      }
+    );
+  }
+
+
+  if (intent === 'record_ph') {
+
+    return callHaccpBridge(
+      'record_ph',
+      {
+        batch_no:
+          data.batch_no,
+
+        ph:
+          data.ph,
+
+        time:
+          data.time
+      }
+    );
+  }
+
+
+  throw new Error(
+    `Desteklenmeyen HACCP işlemi: ${intent}`
+  );
+}
+
+
+async function processHaccpMessage(
+  sessionId,
+  text
+) {
+
+  const key =
+    String(
+      sessionId ||
+      'unknown'
+    );
+
+  const pending =
+    pendingConfirmations.get(
+      key
+    );
+
+
+  // ----------------------------------------------------------
+  // CONFIRM EXISTING PENDING WRITE
+  // ----------------------------------------------------------
+
+  if (
+    pending &&
+    isConfirmationYes(text)
+  ) {
+
+    const result =
+      await executeHaccpInterpretation(
+        pending
+      );
+
+
+    if (result?.ok) {
+
+      pendingConfirmations.delete(
+        key
+      );
+    }
+
+
+    return {
+      type: 'executed',
+      summary:
+        pending.summary || '',
+      bridge_result:
+        result
+    };
+  }
+
+
+  // ----------------------------------------------------------
+  // CANCEL EXISTING PENDING WRITE
+  // ----------------------------------------------------------
+
+  if (
+    pending &&
+    isConfirmationNo(text)
+  ) {
+
+    pendingConfirmations.delete(
+      key
+    );
+
+
+    return {
+      type: 'cancelled',
+      message:
+        'Bekleyen işlem iptal edildi.'
+    };
+  }
+
+
+  // ----------------------------------------------------------
+  // INTERPRET NEW MESSAGE
+  // ----------------------------------------------------------
+
+  const interpretation =
+    await interpretHaccpMessage(
+      text
+    );
+
+
+  if (!interpretation?.ready) {
+
+    return {
+      type: 'question',
+      question:
+        interpretation?.question ||
+        'Eksik bilgi var.',
+      interpretation
+    };
+  }
+
+
+  // ----------------------------------------------------------
+  // READ OPERATIONS RUN DIRECTLY
+  // ----------------------------------------------------------
+
+  if (
+    !interpretation
+      .requires_confirmation
+  ) {
+
+    const result =
+      await executeHaccpInterpretation(
+        interpretation
+      );
+
+
+    return {
+      type: 'read_result',
+      interpretation,
+      bridge_result:
+        result
+    };
+  }
+
+
+  // ----------------------------------------------------------
+  // WRITE OPERATIONS WAIT FOR YES
+  // ----------------------------------------------------------
+
+  pendingConfirmations.set(
+    key,
+    interpretation
+  );
+
+
+  return {
+    type:
+      'confirmation_required',
+
+    summary:
+      interpretation.summary,
+
+    message:
+      `${interpretation.summary} Onaylıyor musun?`,
+
+    interpretation
+  };
+}
+
+
 // ============================================================
 // SERVER
 // ============================================================
@@ -509,6 +790,57 @@ const server =
         }
 
 
+                // ----------------------------------------------------
+        // HACCP MESSAGE + CONFIRMATION TEST
+        // ----------------------------------------------------
+
+        if (
+          req.method === 'GET' &&
+          url.pathname === '/message-test'
+        ) {
+
+          const text =
+            url.searchParams.get('text') || '';
+
+          const sessionId =
+            url.searchParams.get('session') ||
+            'test-user';
+
+
+          if (!text.trim()) {
+
+            return sendJson(
+              res,
+              400,
+              {
+                ok: false,
+                error: 'text parametresi gerekli'
+              }
+            );
+          }
+
+
+          const result =
+            await processHaccpMessage(
+              sessionId,
+              text
+            );
+
+
+          return sendJson(
+            res,
+            200,
+            {
+              ok: true,
+              session_id: sessionId,
+              input: text,
+              result
+            }
+          );
+        }
+
+
+        
         
         // ----------------------------------------------------
         // TEST POST
