@@ -532,27 +532,43 @@ async function processHaccpMessage(
     isConfirmationYes(text)
   ) {
 
+
     const result =
       await executeHaccpInterpretation(
         pending
       );
 
 
-    if (result?.ok) {
+    if (!result?.ok) {
 
-      pendingConfirmations.delete(
-        key
-      );
+      return {
+        type: 'execution_failed',
+        summary:
+          pending.summary || '',
+        message:
+          'İşlem kaydedilemedi.',
+        bridge_result:
+          result
+      };
     }
+
+
+    pendingConfirmations.delete(
+      key
+    );
 
 
     return {
       type: 'executed',
       summary:
         pending.summary || '',
+      message:
+        'İşlem başarıyla kaydedildi.',
       bridge_result:
         result
     };
+
+    
   }
 
 
