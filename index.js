@@ -202,6 +202,436 @@ function parseJsonText(text) {
   return JSON.parse(cleaned);
 }
 
+function getHaccpToday() {
+
+  return new Intl.DateTimeFormat(
+    'tr-TR',
+    {
+      timeZone:
+        'Europe/Istanbul',
+
+      day:
+        '2-digit',
+
+      month:
+        '2-digit',
+
+      year:
+        'numeric'
+    }
+  ).format(
+    new Date()
+  );
+}
+
+
+function positiveNumber(
+  value
+) {
+
+  const normalized =
+    String(
+      value ?? ''
+    )
+      .trim()
+      .replace(
+        ',',
+        '.'
+      );
+
+
+  const number =
+    Number(
+      normalized
+    );
+
+
+  if (
+    !Number.isFinite(
+      number
+    ) ||
+    number <= 0
+  ) {
+
+    return null;
+  }
+
+
+  return number;
+}
+
+
+function getCreateBatchMissingFields(
+  data
+) {
+
+  const batch =
+    data?.batch || {};
+
+
+  const missing =
+    [];
+
+
+  if (
+    ![
+      'sour_cream',
+      'stp',
+      'dessert'
+    ].includes(
+      data?.product_type
+    )
+  ) {
+
+    missing.push(
+      'ürün tipi'
+    );
+  }
+
+
+  if (!String(batch.date || '').trim()) {
+
+    missing.push(
+      'üretim tarihi'
+    );
+  }
+
+
+  if (!String(batch.recipe || '').trim()) {
+
+    missing.push(
+      'reçete'
+    );
+  }
+
+
+  if (!String(batch.product || '').trim()) {
+
+    missing.push(
+      'ürün adı'
+    );
+  }
+
+
+  if (
+    positiveNumber(
+      batch.grammage
+    ) === null
+  ) {
+
+    missing.push(
+      'gramaj'
+    );
+  }
+
+
+  if (!String(batch.unit || '').trim()) {
+
+    missing.push(
+      'birim'
+    );
+  }
+
+
+  if (
+    positiveNumber(
+      batch.quantity
+    ) === null
+  ) {
+
+    missing.push(
+      'planlanan miktar'
+    );
+  }
+
+
+  if (
+    positiveNumber(
+      batch.batch_count
+    ) === null
+  ) {
+
+    missing.push(
+      'batch adedi'
+    );
+  }
+
+
+  return missing;
+}
+
+
+function normalizeHaccpInterpretation(
+  interpretation
+) {
+
+  const sourceOperations =
+    Array.isArray(
+      interpretation?.operations
+    ) &&
+    interpretation.operations.length
+      ? interpretation.operations
+      : [
+          {
+            intent:
+              interpretation?.intent ||
+              'unknown',
+
+            requires_confirmation:
+              Boolean(
+                interpretation
+                  ?.requires_confirmation
+              ),
+
+            summary:
+              interpretation?.summary ||
+              '',
+
+            data:
+              interpretation?.data ||
+              {}
+          }
+        ];
+
+
+  const allMissing =
+    [];
+
+
+  const normalizedOperations =
+    sourceOperations.map(
+      operation => {
+
+        if (
+          operation?.intent !==
+          'create_batch'
+        ) {
+
+          return operation;
+        }
+
+
+        const data =
+          operation?.data || {};
+
+
+        const originalBatch =
+          data?.batch &&
+          typeof data.batch ===
+            'object'
+            ? data.batch
+            : {};
+
+
+        const batch = {
+          ...originalBatch,
+
+          batch_no:
+            '',
+
+          output_kg:
+            '',
+
+          invoice_info:
+            String(
+              originalBatch
+                .invoice_info ||
+              ''
+            ).trim(),
+
+          raw_material_lots:
+            String(
+              originalBatch
+                .raw_material_lots ||
+              ''
+            ).trim()
+        };
+
+
+        const grammage =
+          positiveNumber(
+            batch.grammage
+          );
+
+
+        const quantity =
+          positiveNumber(
+            batch.quantity
+          );
+
+
+        if (grammage !== null) {
+
+          batch.grammage =
+            String(
+              grammage
+            );
+        }
+
+
+        if (quantity !== null) {
+
+          batch.quantity =
+            String(
+              quantity
+            );
+        }
+
+
+        if (
+          grammage !== null &&
+          quantity !== null
+        ) {
+
+          batch.total_production =
+            String(
+              grammage *
+              quantity
+            );
+
+        } else {
+
+          batch.total_production =
+            '';
+        }
+
+
+        const normalizedData = {
+          ...data,
+          batch
+        };
+
+
+        const missing =
+          getCreateBatchMissingFields(
+            normalizedData
+          );
+
+
+        allMissing.push(
+          ...missing
+        );
+
+
+        let summary =
+          operation?.summary ||
+          'Yeni üretim partisi oluşturulacak.';
+
+
+        if (!missing.length) {
+
+          const totalKg =
+            Number(
+              batch.total_production
+            ) / 1000;
+
+
+          summary =
+            `Yeni üretim partisi oluşturulacak: ${batch.product}, ${batch.date}, reçete ${batch.recipe}, ${batch.quantity} ${batch.unit}, toplam ${totalKg} kg, ${batch.batch_count} batch. Parti numarası global sıradan sistem tarafından atanacak.`;
+        }
+
+
+        return {
+          ...operation,
+
+          requires_confirmation:
+            true,
+
+          summary,
+
+          data:
+            normalizedData
+        };
+      }
+    );
+
+
+  const uniqueMissing =
+    [
+      ...new Set(
+        allMissing
+      )
+    ];
+
+
+  const firstOperation =
+    normalizedOperations[0] ||
+    {
+      intent:
+        'unknown',
+      data:
+        {}
+    };
+
+
+  const normalized = {
+    ...interpretation,
+
+    operations:
+      normalizedOperations,
+
+    intent:
+      firstOperation.intent,
+
+    data:
+      firstOperation.data
+  };
+
+
+  const hasCreateBatch =
+    normalizedOperations.some(
+      operation =>
+        operation?.intent ===
+        'create_batch'
+    );
+
+
+  if (uniqueMissing.length) {
+
+    normalized.ready =
+      false;
+
+    normalized.requires_confirmation =
+      true;
+
+    normalized.question =
+      `Yeni üretim partisi için eksik bilgiler: ${uniqueMissing.join(', ')}.`;
+
+    return normalized;
+  }
+
+
+  if (
+    hasCreateBatch &&
+    normalizedOperations.every(
+      operation =>
+        operation?.intent ===
+        'create_batch'
+    )
+  ) {
+
+    normalized.ready =
+      true;
+
+    normalized.requires_confirmation =
+      true;
+
+    normalized.question =
+      null;
+
+    if (
+      normalizedOperations.length === 1
+    ) {
+
+      normalized.summary =
+        normalizedOperations[0]
+          .summary;
+    }
+  }
+
+
+  return normalized;
+}
 
 async function interpretHaccpMessage(text) {
 
@@ -338,6 +768,49 @@ create_batch için data:
   }
 }
 
+create_batch kuralları:
+
+- batch_no kullanıcıdan İSTENMEZ.
+- batch_no alanını boş bırak.
+- Parti numarasını sistem onaydan sonra global sıradan oluşturacak.
+- Örnek sıra: EK 4 -> STP 5 -> EK 6.
+
+- output_kg üretim bitmeden bilinmez.
+- output_kg alanını boş bırak.
+- Kullanıcıdan parti açılışında çıkan miktarı isteme.
+
+- total_production kullanıcıdan istenmez.
+- total_production alanını boş bırak.
+- Sistem gramaj x quantity ile kendisi hesaplayacak.
+
+- invoice_info ve raw_material_lots parti açılışında opsiyoneldir.
+- Bunlar eksik diye yeni parti açılmasını engelleme.
+
+Yeni parti için zorunlu bilgiler:
+
+product_type
+date
+recipe
+product
+grammage
+unit
+quantity
+batch_count
+
+Eksik zorunlu bilgiler varsa sadece eksik bilgileri sor.
+Bilinen bilgileri tekrar isteme.
+
+grammage değerini gram cinsinden sayısal döndür.
+Örnek:
+"4 kg" -> "4000"
+
+quantity sayısal olsun.
+
+Bugünün tarihi Türkiye için:
+${getHaccpToday()}
+
+Kullanıcı "bugün" derse bu tarihi kullan.
+
 record_process_measurement için data:
 
 {
@@ -439,10 +912,12 @@ operations içinde iki ayrı işlem üret:
     );
   }
 
-
-  return parseJsonText(
-    outputText
+return normalizeHaccpInterpretation(
+    parseJsonText(
+      outputText
+    )
   );
+  
 }
 
 
