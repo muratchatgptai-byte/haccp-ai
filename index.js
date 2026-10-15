@@ -18,6 +18,9 @@ const OPENAI_API_KEY =
 const OPENAI_MODEL =
   process.env.OPENAI_MODEL || 'gpt-6-sol';
 
+const HACCP_ROUTER_SECRET =
+  process.env.HACCP_ROUTER_SECRET || '';
+
 
 // ============================================================
 // BASIC JSON RESPONSE
@@ -1461,6 +1464,91 @@ async function processHaccpMessage(
 // SERVER
 // ============================================================
 
+
+function formatHaccpReply(
+  result
+) {
+
+  if (!result) {
+
+    return 'HACCP işlemi tamamlanamadı.';
+  }
+
+
+  if (
+    result.type === 'question'
+  ) {
+
+    return (
+      result.question ||
+      'Eksik bilgi var.'
+    );
+  }
+
+
+  if (result.message) {
+
+    return String(
+      result.message
+    );
+  }
+
+
+  if (
+    result.type ===
+    'read_result'
+  ) {
+
+    const firstResult =
+      result
+        ?.bridge_result
+        ?.results
+        ?.[0]
+        ?.bridge_result;
+
+
+    if (
+      firstResult?.found &&
+      firstResult?.batch
+    ) {
+
+      return (
+        'Parti ' +
+        String(
+          firstResult
+            .batch
+            .batch_no || ''
+        ) +
+        ' bulundu. Sayfa: ' +
+        String(
+          firstResult
+            .batch
+            .sheet_name || ''
+        ) +
+        '.'
+      );
+    }
+
+
+    return (
+      firstResult?.error ||
+      'Kayıt bulunamadı.'
+    );
+  }
+
+
+  if (result.summary) {
+
+    return String(
+      result.summary
+    );
+  }
+
+
+  return 'HACCP işlemi tamamlandı.';
+}
+
+
 const server =
   http.createServer(
     async (req, res) => {
@@ -1660,6 +1748,146 @@ const server =
         }
 
 
+        // ----------------------------------------------------
+        // PRODUCTION HACCP MESSAGE
+        // ----------------------------------------------------
+
+        if (
+          req.method === 'POST' &&
+          url.pathname === '/message'
+        ) {
+
+          const routerSecret =
+            String(
+              req.headers[
+                'x-haccp-router-secret'
+              ] || ''
+            );
+
+
+          if (
+            !HACCP_ROUTER_SECRET ||
+            routerSecret !==
+              HACCP_ROUTER_SECRET
+          ) {
+
+            return sendJson(
+              res,
+              401,
+              {
+                ok: false,
+                error: 'unauthorized'
+              }
+            );
+          }
+
+
+          const bodyText =
+            await readBody(req);
+
+
+          let body = {};
+
+
+          try {
+
+            body =
+              JSON.parse(
+                bodyText || '{}'
+              );
+
+          } catch {
+
+            return sendJson(
+              res,
+              400,
+              {
+                ok: false,
+                error:
+                  'Geçersiz JSON'
+              }
+            );
+          }
+
+
+          const waId =
+            String(
+              body.wa_id || ''
+            ).trim();
+
+
+          const actorName =
+            String(
+              body.actor_name || ''
+            ).trim();
+
+
+          const text =
+            String(
+              body.text || ''
+            ).trim();
+
+
+          if (!waId) {
+
+            return sendJson(
+              res,
+              400,
+              {
+                ok: false,
+                error:
+                  'wa_id gerekli'
+              }
+            );
+          }
+
+
+          if (!text) {
+
+            return sendJson(
+              res,
+              400,
+              {
+                ok: false,
+                error:
+                  'text gerekli'
+              }
+            );
+          }
+
+
+          const result =
+            await processHaccpMessage(
+              waId,
+              text,
+              {
+                id:
+                  waId,
+
+                name:
+                  actorName
+              }
+            );
+
+
+          return sendJson(
+            res,
+            200,
+            {
+              ok: true,
+
+              wa_id:
+                waId,
+
+              reply:
+                formatHaccpReply(
+                  result
+                ),
+
+              result
+            }
+          );
+        }
         
         
         // ----------------------------------------------------
