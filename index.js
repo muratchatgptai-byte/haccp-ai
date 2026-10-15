@@ -600,7 +600,7 @@ async function processHaccpMessage(
     );
 
 
-    if (!result?.ok) {
+   if (!result?.ok) {
 
       return {
         type: 'execution_failed',
@@ -613,6 +613,19 @@ async function processHaccpMessage(
       };
     }
 
+     if (result?.verified !== true) {
+
+      return {
+        type: 'verification_failed',
+        summary:
+          pending.summary || '',
+        message:
+          'İşlem sonucu Sheet üzerinden doğrulanamadı. Başarılı kabul edilmedi.',
+        bridge_result:
+          result
+      };
+    }
+    
 
     pendingConfirmations.delete(
       key
