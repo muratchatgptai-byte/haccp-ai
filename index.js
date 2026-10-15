@@ -2380,125 +2380,272 @@ return {
     };
   }
 
-
-  // ==========================================================
-  // 6.5.4 - OPEN PRODUCTION PROCESS MEASUREMENT
+// ==========================================================
+  // 6.5.5 - PRODUCTION PROCESS RECORDS
   // ==========================================================
 
   const processCommand =
     normalizeCommandText(text);
 
-  const processMatch = processCommand.match(
-    /(?:ekşi|eksi|pavlaka).*?(?:son\s*ısı|son\s*isi|son\s*ısıl\s*işlem)\s+(\d+(?:[.,]\d+)?)\s*(?:derece|°c|c)?\s+(\d{1,2}[:.]\d{2})/i
+  const productMatch = processCommand.match(
+    /\b(ekşi|eksi|pavlaka|peynir|stp|tatlı)\b/i
   );
 
-  if (processMatch && !intakeDraft) {
+  if (productMatch && !intakeDraft) {
 
-    const measurement =
-      processMatch[1].replace(',', '.');
+    const productWord =
+      productMatch[1].toLowerCase();
 
-    const measurementTime =
-      processMatch[2].replace('.', ':');
+    const productType =
+      /ekşi|eksi|pavlaka/.test(productWord)
+        ? 'sour_cream'
+        : /peynir|stp/.test(productWord)
+          ? 'stp'
+          : 'dessert';
 
-    const lookup =
-      await callHaccpBridge(
-        'get_open_productions',
-        {
-          product_type: 'sour_cream'
-        }
-      );
+    const productNames = {
+      sour_cream: 'Ekşi Krema',
+      stp: 'Taze Peynir',
+      dessert: 'Sütlü Tatlı'
+    };
 
-    if (!lookup?.ok) {
-      return {
-        type: 'lookup_failed',
-        message:
-          'Açık üretimler sorgulanamadı.'
-      };
-    }
-
-    const productions =
-      lookup.productions || [];
-
-    if (!productions.length) {
-      return {
-        type: 'no_open_production',
-        message:
-          'Açık Ekşi Krema üretimi bulunamadı.'
-      };
-    }
-
-    if (productions.length > 1) {
-
-      const options = productions.map(
-        (production, index) =>
-          `${index + 1}. ${production.production_date} - ${production.batch_count} batch - ${production.start_time}`
-      );
-
-      return {
-        type: 'multiple_open_productions',
-        message:
-          'Birden fazla açık Ekşi Krema üretimi var:\n' +
-          options.join('\n') +
-          '\nÖlçümün ait olduğu üretim tarihini belirt. Otomatik kayıt yapılmadı.'
-      };
-    }
-
-    const production = productions[0];
-
-    const summary =
-      `${production.production_date} Ekşi Krema üretimi: Son ısıl işlem ${measurement}°C, saat ${measurementTime} kaydedilecek.`;
-
-    const pendingOperation = {
-      intent: 'record_open_production_measurement',
-      requires_confirmation: true,
-      summary: summary,
-      operation_id: randomUUID(),
-      actor_id: actorId,
-      actor_name: actorName,
-      data: {
-        production_id:
-          production.production_id,
-        process: 'Son ısıl işlem',
-        measurement: measurement,
-        time: measurementTime
+    const processDefinitions = [
+      {
+        pattern:
+          /son\s*(?:ısı|isi|ısıl\s*işlem)/i,
+        name: 'Son ısıl işlem',
+        kind: 'temperature'
+      },
+      {
+        pattern:
+          /kültür\s*ekleme\s*sıcaklığı|kultur\s*ekleme\s*sicakligi|kültür\s+\d|kultur\s+\d/i,
+        name: 'Kültür ekleme sıcaklığına soğutma',
+        kind: 'temperature'
+      },
+      {
+        pattern:
+          /fermantasyon\s*kabinine\s*(?:alma|alındı|alindi|kondu)/i,
+        name: 'Fermantasyon kabinine alma',
+        kind: 'event'
+      },
+      {
+        pattern:
+          /homojenizasyon|homojenizerden\s*geçti/i,
+        name: 'Homojenizasyon ve aynı kazana dönüş',
+        kind: 'event'
+      },
+      {
+        pattern:
+          /kültür\s*eklendi|kultur\s*eklendi/i,
+        name: 'Kültür ekleme',
+        kind: 'event'
+      },
+      {
+        pattern:
+          /(?:son\s*)?ambalajlara\s*dolum|dolum\s*(?:başladı|bitti|tamamlandı)/i,
+        name: 'Son ambalajlara dolum',
+        kind: 'event'
+      },
+      {
+        pattern:
+          /kapak(?:lar)?\s*(?:kapatıldı|kapandi|kapandı)/i,
+        name: 'Kapak kapatma',
+        kind: 'event'
+      },
+      {
+        pattern:
+          /tartım\s*(?:bitti|tamamlandı)|kazana\s*alma/i,
+        name: 'Tartım ve kazana alma',
+        kind: 'event'
       }
-    };
+    ];
 
-    const pendingInterpretation = {
-      state_kind: 'confirmation',
-      ready: true,
-      requires_confirmation: true,
-      summary: summary,
-      operations: [pendingOperation],
-      actor_id: actorId,
-      actor_name: actorName
-    };
-
-    const saved =
-      await persistPendingConfirmation(
-        key,
-        pendingInterpretation,
-        actorId,
-        actorName
+    const definition =
+      processDefinitions.find(
+        item => item.pattern.test(processCommand)
       );
 
-    if (!saved.ok) {
+    // pH kayıtları ayrı ve geçmiş korumalı
+    // fonksiyon üzerinden yönetilecek.
+    const isPhMessage =
+      /\bp\s*h\b/i.test(processCommand);
+
+    if (definition && !isPhMessage) {
+
+      const timeMatch =
+        processCommand.match(
+          /\b(\d{1,2})[:.](\d{2})\b/
+        );
+
+      const measurementTime =
+        timeMatch
+          ? `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`
+          : '';
+
+      let measurement = '';
+
+      if (definition.kind === 'temperature') {
+
+        const temperatureMatch =
+          processCommand.match(
+            /(\d+(?:[.,]\d+)?)\s*(?:derece|°c|c)\b/i
+          );
+
+        if (temperatureMatch) {
+          measurement =
+            temperatureMatch[1].replace(',', '.');
+        }
+
+      } else {
+        measurement = 'Tamamlandı';
+      }
+
+      if (!measurement || !measurementTime) {
+
+        return {
+          type: 'question',
+          question:
+            'Bu proses kaydı için ' +
+            (!measurement ? 'ölçüm ve ' : '') +
+            'saat bilgisi gerekli. Örnek: ' +
+            'HACCP ekşi son ısı 76 derece 11:35'
+        };
+      }
+
+      const hours =
+        Number(measurementTime.split(':')[0]);
+
+      const minutes =
+        Number(measurementTime.split(':')[1]);
+
+      if (
+        hours > 23 ||
+        minutes > 59
+      ) {
+
+        return {
+          type: 'question',
+          question:
+            'Geçerli bir saat belirt. Örnek: 11:35'
+        };
+      }
+
+      const lookup =
+        await callHaccpBridge(
+          'get_open_productions',
+          {
+            product_type: productType
+          }
+        );
+
+      if (!lookup?.ok) {
+
+        return {
+          type: 'lookup_failed',
+          message:
+            'Açık üretimler sorgulanamadı.'
+        };
+      }
+
+      const productions =
+        lookup.productions || [];
+
+      if (!productions.length) {
+
+        return {
+          type: 'no_open_production',
+          message:
+            `Açık ${productNames[productType]} üretimi bulunamadı.`
+        };
+      }
+
+      if (productions.length > 1) {
+
+        const options =
+          productions.map(
+            (production, index) =>
+              `${index + 1}. ${production.production_date} - ${production.batch_count} batch - ${production.start_time}`
+          );
+
+        return {
+          type: 'multiple_open_productions',
+          message:
+            'Birden fazla açık üretim var:\n' +
+            options.join('\n') +
+            '\nİlgili üretimi belirt. Kayıt yapılmadı.'
+        };
+      }
+
+      const production = productions[0];
+
+      const measurementLabel =
+        definition.kind === 'temperature'
+          ? `${measurement}°C`
+          : measurement;
+
+      const summary =
+        `${production.production_date} ${production.product_name}: ` +
+        `${definition.name}, ${measurementLabel}, saat ${measurementTime} kaydedilecek.`;
+
+      const pendingOperation = {
+        intent:
+          'record_open_production_measurement',
+
+        requires_confirmation: true,
+        summary,
+        operation_id: randomUUID(),
+        actor_id: actorId,
+        actor_name: actorName,
+
+        data: {
+          production_id:
+            production.production_id,
+
+          process:
+            definition.name,
+
+          measurement,
+          time: measurementTime
+        }
+      };
+
+      const pendingInterpretation = {
+        state_kind: 'confirmation',
+        ready: true,
+        requires_confirmation: true,
+        summary,
+        operations: [pendingOperation],
+        actor_id: actorId,
+        actor_name: actorName
+      };
+
+      const saved =
+        await persistPendingConfirmation(
+          key,
+          pendingInterpretation,
+          actorId,
+          actorName
+        );
+
+      if (!saved.ok) {
+
+        return {
+          type: 'pending_persistence_failed',
+          message:
+            'Ölçüm onayı kaydedilemedi. İşlem yapılmadı.'
+        };
+      }
+
+      pendingConfirmations.set(
+        key,
+        pendingInterpretation
+      );
+
       return {
-        type: 'pending_persistence_failed',
-        message:
-          'Ölçüm onayı kaydedilemedi. İşlem yapılmadı.'
+        type: 'confirmation_required',
+        message: summary + ' Onaylıyor musun?'
       };
     }
-
-    pendingConfirmations.set(
-      key,
-      pendingInterpretation
-    );
-
-    return {
-      type: 'confirmation_required',
-      message: summary + ' Onaylıyor musun?'
-    };
   }
 
   
