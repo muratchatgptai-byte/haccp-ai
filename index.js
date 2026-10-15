@@ -376,6 +376,8 @@ ancak hiçbir işlemi kendin uygulama.
 const pendingConfirmations =
   new Map();
 
+const executingConfirmations =
+  new Set();
 
 function normalizeCommandText(text) {
 
@@ -523,6 +525,20 @@ async function processHaccpMessage(
     );
 
 
+ if (
+    executingConfirmations.has(
+      key
+    )
+  ) {
+
+    return {
+      type: 'execution_in_progress',
+      message:
+        'Bu işlem şu anda kaydediliyor. Lütfen tekrar göndermeyin.'
+    };
+  }
+  
+
   // ----------------------------------------------------------
   // CONFIRM EXISTING PENDING WRITE
   // ----------------------------------------------------------
@@ -536,6 +552,11 @@ async function processHaccpMessage(
  let result;
 
 
+    executingConfirmations.add(
+      key
+    );
+
+
     try {
 
       result =
@@ -544,6 +565,11 @@ async function processHaccpMessage(
         );
 
     } catch (err) {
+
+      executingConfirmations.delete(
+        key
+      );
+
 
       return {
         type: 'execution_failed',
@@ -556,6 +582,11 @@ async function processHaccpMessage(
           String(err)
       };
     }
+
+
+    executingConfirmations.delete(
+      key
+    );
 
 
     if (!result?.ok) {
