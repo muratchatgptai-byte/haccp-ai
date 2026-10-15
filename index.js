@@ -226,30 +226,93 @@ record_ph
 unknown
 
 Yazma işlemleri:
+
 create_batch
 record_process_measurement
 record_ph
 
-Bu işlemlerde:
+Okuma işlemi:
+
+get_batch
+
+Her kullanıcı mesajını operations dizisine ayır.
+
+Kullanıcı tek işlem söylüyorsa operations içinde 1 eleman üret.
+
+Kullanıcı bir mesajda birden fazla bağımsız işlem söylüyorsa
+her işlemi operations içinde ayrı eleman olarak üret.
+
+Her operation formatı:
+
+{
+  "intent": "unknown",
+  "requires_confirmation": false,
+  "summary": "",
+  "data": {}
+}
+
+Yazma operationlarında:
+
 requires_confirmation = true
 
-Sadece okuma işlemi olan get_batch için:
+get_batch operationında:
+
 requires_confirmation = false
 
 Eksik veya belirsiz bilgi varsa tahmin etme.
-ready = false yap ve question alanında kısa bir soru üret.
+
+Herhangi bir operation güvenli şekilde uygulanamayacak kadar
+eksik veya belirsizse:
+
+ready = false
+
+ve question alanında kullanıcının cevaplayabileceği
+kısa ve açık bir soru üret.
+
+Tüm operationlar yeterince açıksa:
+
+ready = true
+question = null
+
+Üst seviye requires_confirmation:
+
+operations içindeki en az bir işlem yazma işlemi ise true,
+yalnızca okuma işlemleri varsa false olmalıdır.
+
+summary alanı tüm mesajdaki işlemleri kısa şekilde özetlemelidir.
+
+GEÇİCİ GERİYE UYUMLULUK KURALI:
+
+Üst seviyedeki intent ve data alanları da mutlaka bulunmalıdır.
+
+intent =
+operations dizisindeki ilk işlemin intent değeri
+
+data =
+operations dizisindeki ilk işlemin data değeri
+
+Bu iki alan geçicidir.
+operations dizisi asıl yapılandırılmış işlem listesidir.
 
 Yanıt SADECE geçerli JSON olsun.
 
 Format:
 
 {
-  "intent": "unknown",
   "ready": false,
   "requires_confirmation": false,
   "summary": "",
+  "question": null,
+  "intent": "unknown",
   "data": {},
-  "question": null
+  "operations": [
+    {
+      "intent": "unknown",
+      "requires_confirmation": false,
+      "summary": "",
+      "data": {}
+    }
+  ]
 }
 
 create_batch için data:
@@ -296,8 +359,17 @@ get_batch için data:
   "batch_no": ""
 }
 
-Kullanıcı bir mesajda birden fazla işlem söylüyorsa summary alanında bunu belirt,
-ancak hiçbir işlemi kendin uygulama.
+Örnek:
+
+Kullanıcı:
+"18 numaralı parti pH 4.46 saat 17.20 ve soğutma sıcaklığı 6 derece saat 18.00"
+
+operations içinde iki ayrı işlem üret:
+
+1. record_ph
+2. record_process_measurement
+
+İki işlemi tek operation içinde birleştirme.
 `.trim();
 
 
