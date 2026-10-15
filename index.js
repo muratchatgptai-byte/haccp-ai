@@ -608,6 +608,156 @@ async function executeHaccpInterpretation(
   );
 }
 
+async function executeHaccpOperations(
+  interpretation
+) {
+
+  const operations =
+    Array.isArray(
+      interpretation?.operations
+    ) &&
+    interpretation.operations.length
+      ? interpretation.operations
+      : [interpretation];
+
+
+  const results = [];
+
+
+  for (
+    let index = 0;
+    index < operations.length;
+    index++
+  ) {
+
+    const operation =
+      operations[index];
+
+
+    try {
+
+      const bridgeResult =
+        await executeHaccpInterpretation(
+          operation
+        );
+
+
+      const needsVerification =
+        Boolean(
+          operation
+            ?.requires_confirmation
+        );
+
+
+      const verified =
+        needsVerification
+          ? bridgeResult?.verified === true
+          : true;
+
+
+      const ok =
+        Boolean(
+          bridgeResult?.ok
+        ) &&
+        verified;
+
+
+      results.push({
+        index,
+
+        intent:
+          operation?.intent ||
+          'unknown',
+
+        ok,
+
+        verified,
+
+        bridge_result:
+          bridgeResult
+      });
+
+
+      if (!ok) {
+
+        return {
+          ok: false,
+
+          verified: false,
+
+          partial_failure:
+            results
+              .slice(
+                0,
+                -1
+              )
+              .some(
+                item =>
+                  item.ok
+              ),
+
+          failed_index:
+            index,
+
+          results
+        };
+      }
+
+    } catch (err) {
+
+      results.push({
+        index,
+
+        intent:
+          operation?.intent ||
+          'unknown',
+
+        ok: false,
+
+        verified: false,
+
+        error:
+          err?.message ||
+          String(err)
+      });
+
+
+      return {
+        ok: false,
+
+        verified: false,
+
+        partial_failure:
+          results
+            .slice(
+              0,
+              -1
+            )
+            .some(
+              item =>
+                item.ok
+            ),
+
+        failed_index:
+          index,
+
+        results
+      };
+    }
+  }
+
+
+  return {
+    ok: true,
+
+    verified: true,
+
+    partial_failure: false,
+
+    results
+  };
+}
+
 
 async function processHaccpMessage(
   sessionId,
@@ -676,7 +826,7 @@ async function processHaccpMessage(
     try {
 
       result =
-        await executeHaccpInterpretation(
+        await executeHaccpOperations(
           pending
         );
 
@@ -704,19 +854,47 @@ async function processHaccpMessage(
       key
     );
 
+  if (!result?.ok) {
 
-   if (!result?.ok) {
+      if (result?.partial_failure) {
+
+        pendingConfirmations.delete(
+          key
+        );
+
+
+        return {
+          type: 'partial_failure',
+
+          summary:
+            pending.summary || '',
+
+          message:
+            'Bazı işlemler tamamlandı ancak en az bir işlem başarısız oldu. Başarısız işlemi yeni komut olarak tekrar gönder.',
+
+          operation_results:
+            result.results || []
+        };
+      }
+
 
       return {
         type: 'execution_failed',
+
         summary:
           pending.summary || '',
+
         message:
           'İşlem kaydedilemedi.',
+
+        operation_results:
+          result?.results || [],
+
         bridge_result:
           result
       };
     }
+  
 
      if (result?.verified !== true) {
 
@@ -821,8 +999,8 @@ async function processHaccpMessage(
       .requires_confirmation
   ) {
 
-    const result =
-      await executeHaccpInterpretation(
+     const result =
+      await executeHaccpOperations(
         interpretation
       );
 
@@ -840,12 +1018,58 @@ async function processHaccpMessage(
   // WRITE OPERATIONS WAIT FOR YES
   // ----------------------------------------------------------
 
+  const sourceOperations =
+    Array.isArray(
+      interpretation.operations
+    ) &&
+    interpretation.operations.length
+      ? interpretation.operations
+      : [
+          {
+            intent:
+              interpretation.intent,
+
+            requires_confirmation:
+              interpretation
+                .requires_confirmation,
+
+            summary:
+              interpretation.summary,
+
+            data:
+              interpretation.data || {}
+          }
+        ];
+
+
+  const pendingOperations =
+    sourceOperations.map(
+      (operation) => ({
+        ...operation,
+
+        operation_id:
+          operation
+            .requires_confirmation
+            ? (
+                operation.operation_id ||
+                randomUUID()
+              )
+            : operation.operation_id,
+
+        actor_id:
+          actorId,
+
+        actor_name:
+          actorName
+      })
+    );
+
+
   const pendingInterpretation = {
     ...interpretation,
 
-    operation_id:
-      interpretation.operation_id ||
-      randomUUID(),
+    operations:
+      pendingOperations,
 
     actor_id:
       actorId,
