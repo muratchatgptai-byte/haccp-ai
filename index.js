@@ -452,6 +452,12 @@ async function executeHaccpInterpretation(
         operation_id:
           interpretation.operation_id,
 
+        actor_id:
+          interpretation.actor_id,
+
+        actor_name:
+          interpretation.actor_name,
+
         product_type:
           data.product_type,
 
@@ -472,6 +478,12 @@ async function executeHaccpInterpretation(
       {
         operation_id:
           interpretation.operation_id,
+
+        actor_id:
+          interpretation.actor_id,
+
+        actor_name:
+          interpretation.actor_name,
 
         batch_no:
           data.batch_no,
@@ -496,9 +508,15 @@ async function executeHaccpInterpretation(
 
     return callHaccpBridge(
       'record_ph',
-       {
+        {
         operation_id:
           interpretation.operation_id,
+
+        actor_id:
+          interpretation.actor_id,
+
+        actor_name:
+          interpretation.actor_name,
 
         batch_no:
           data.batch_no,
@@ -521,7 +539,8 @@ async function executeHaccpInterpretation(
 
 async function processHaccpMessage(
   sessionId,
-  text
+  text,
+  actor = {}
 ) {
 
   const key =
@@ -529,6 +548,20 @@ async function processHaccpMessage(
       sessionId ||
       'unknown'
     );
+
+
+  const actorId =
+    String(
+      actor.id ||
+      key
+    ).trim();
+
+
+  const actorName =
+    String(
+      actor.name ||
+      ''
+    ).trim();
 
   const pending =
     pendingConfirmations.get(
@@ -735,11 +768,18 @@ async function processHaccpMessage(
   // WRITE OPERATIONS WAIT FOR YES
   // ----------------------------------------------------------
 
-   const pendingInterpretation = {
+  const pendingInterpretation = {
     ...interpretation,
+
     operation_id:
       interpretation.operation_id ||
-      randomUUID()
+      randomUUID(),
+
+    actor_id:
+      actorId,
+
+    actor_name:
+      actorName
   };
 
 
@@ -936,10 +976,22 @@ const server =
           }
 
 
+        const actorName =
+            url.searchParams.get('actor') ||
+            '';
+
+
           const result =
             await processHaccpMessage(
               sessionId,
-              text
+              text,
+              {
+                id:
+                  sessionId,
+
+                name:
+                  actorName
+              }
             );
 
 
