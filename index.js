@@ -1596,6 +1596,42 @@ if (intent === 'start_production') {
     }
   );
 }
+
+// ==========================================================
+  // 6.5.4 - SAVE OPEN PRODUCTION MEASUREMENT
+  // ==========================================================
+
+  if (
+    intent ===
+    'record_open_production_measurement'
+  ) {
+
+    return callHaccpBridge(
+      'record_open_production_measurement',
+      {
+        operation_id:
+          interpretation.operation_id,
+
+        actor_id:
+          interpretation.actor_id,
+
+        actor_name:
+          interpretation.actor_name,
+
+        production_id:
+          data.production_id,
+
+        process:
+          data.process,
+
+        measurement:
+          data.measurement,
+
+        time:
+          data.time
+      }
+    );
+  }
   
   if (intent === 'create_batch') {
 
@@ -2343,6 +2379,128 @@ return {
         lines.join('\n')
     };
   }
+
+
+  // ==========================================================
+  // 6.5.4 - OPEN PRODUCTION PROCESS MEASUREMENT
+  // ==========================================================
+
+  const processCommand =
+    normalizeCommandText(text);
+
+  const processMatch = processCommand.match(
+    /(?:ekşi|eksi|pavlaka).*?(?:son\s*ısı|son\s*isi|son\s*ısıl\s*işlem)\s+(\d+(?:[.,]\d+)?)\s*(?:derece|°c|c)?\s+(\d{1,2}[:.]\d{2})/i
+  );
+
+  if (processMatch && !intakeDraft) {
+
+    const measurement =
+      processMatch[1].replace(',', '.');
+
+    const measurementTime =
+      processMatch[2].replace('.', ':');
+
+    const lookup =
+      await callHaccpBridge(
+        'get_open_productions',
+        {
+          product_type: 'sour_cream'
+        }
+      );
+
+    if (!lookup?.ok) {
+      return {
+        type: 'lookup_failed',
+        message:
+          'Açık üretimler sorgulanamadı.'
+      };
+    }
+
+    const productions =
+      lookup.productions || [];
+
+    if (!productions.length) {
+      return {
+        type: 'no_open_production',
+        message:
+          'Açık Ekşi Krema üretimi bulunamadı.'
+      };
+    }
+
+    if (productions.length > 1) {
+
+      const options = productions.map(
+        (production, index) =>
+          `${index + 1}. ${production.production_date} - ${production.batch_count} batch - ${production.start_time}`
+      );
+
+      return {
+        type: 'multiple_open_productions',
+        message:
+          'Birden fazla açık Ekşi Krema üretimi var:\n' +
+          options.join('\n') +
+          '\nÖlçümün ait olduğu üretim tarihini belirt. Otomatik kayıt yapılmadı.'
+      };
+    }
+
+    const production = productions[0];
+
+    const summary =
+      `${production.production_date} Ekşi Krema üretimi: Son ısıl işlem ${measurement}°C, saat ${measurementTime} kaydedilecek.`;
+
+    const pendingOperation = {
+      intent: 'record_open_production_measurement',
+      requires_confirmation: true,
+      summary: summary,
+      operation_id: randomUUID(),
+      actor_id: actorId,
+      actor_name: actorName,
+      data: {
+        production_id:
+          production.production_id,
+        process: 'Son ısıl işlem',
+        measurement: measurement,
+        time: measurementTime
+      }
+    };
+
+    const pendingInterpretation = {
+      state_kind: 'confirmation',
+      ready: true,
+      requires_confirmation: true,
+      summary: summary,
+      operations: [pendingOperation],
+      actor_id: actorId,
+      actor_name: actorName
+    };
+
+    const saved =
+      await persistPendingConfirmation(
+        key,
+        pendingInterpretation,
+        actorId,
+        actorName
+      );
+
+    if (!saved.ok) {
+      return {
+        type: 'pending_persistence_failed',
+        message:
+          'Ölçüm onayı kaydedilemedi. İşlem yapılmadı.'
+      };
+    }
+
+    pendingConfirmations.set(
+      key,
+      pendingInterpretation
+    );
+
+    return {
+      type: 'confirmation_required',
+      message: summary + ' Onaylıyor musun?'
+    };
+  }
+
   
   // ----------------------------------------------------------
   // INTERPRET NEW MESSAGE
