@@ -261,6 +261,69 @@ function positiveNumber(
 }
 
 
+function getStartProductionMissingFields(
+  data
+) {
+
+  const missing =
+    [];
+
+
+  if (
+    ![
+      'sour_cream',
+      'stp',
+      'dessert'
+    ].includes(
+      data?.product_type
+    )
+  ) {
+
+    missing.push(
+      'ürün tipi'
+    );
+  }
+
+
+  if (
+    positiveNumber(
+      data?.batch_count
+    ) === null
+  ) {
+
+    missing.push(
+      'batch adedi'
+    );
+  }
+
+
+  if (
+    !String(
+      data?.production_date || ''
+    ).trim()
+  ) {
+
+    missing.push(
+      'üretim tarihi'
+    );
+  }
+
+
+  if (
+    !String(
+      data?.start_time || ''
+    ).trim()
+  ) {
+
+    missing.push(
+      'başlangıç saati'
+    );
+  }
+
+
+  return missing;
+}
+
 function getCreateBatchMissingFields(
   data
 ) {
@@ -402,6 +465,107 @@ function normalizeHaccpInterpretation(
     sourceOperations.map(
       operation => {
 
+if (
+  operation?.intent ===
+  'start_production'
+) {
+
+  const data =
+    operation?.data || {};
+
+
+  const productType =
+    String(
+      data.product_type || ''
+    ).trim();
+
+
+  const productNames = {
+    sour_cream: 'Ekşi Krema',
+    stp: 'Taze Peynir',
+    dessert: 'Sütlü Tatlı'
+  };
+
+
+  const batchCount =
+    positiveNumber(
+      data.batch_count
+    );
+
+
+  const normalizedData = {
+    ...data,
+
+    product_type:
+      productType,
+
+    product_name:
+      productNames[productType] ||
+      String(
+        data.product_name || ''
+      ).trim(),
+
+    recipe:
+      String(
+        data.recipe || ''
+      ).trim(),
+
+    batch_count:
+      batchCount === null
+        ? String(
+            data.batch_count || ''
+          ).trim()
+        : String(batchCount),
+
+    production_date:
+      String(
+        data.production_date ||
+        getHaccpToday()
+      ).trim(),
+
+    start_time:
+      String(
+        data.start_time || ''
+      ).trim()
+  };
+
+
+  const missing =
+    getStartProductionMissingFields(
+      normalizedData
+    );
+
+
+  allMissing.push(
+    ...missing
+  );
+
+
+  let summary =
+    operation?.summary ||
+    'Yeni üretim açılacak.';
+
+
+  if (!missing.length) {
+
+    summary =
+      `Yeni üretim açılacak: ${normalizedData.product_name}, ${normalizedData.production_date}, ${normalizedData.batch_count} batch, başlangıç ${normalizedData.start_time}.`;
+  }
+
+
+  return {
+    ...operation,
+
+    requires_confirmation:
+      true,
+
+    summary,
+
+    data:
+      normalizedData
+  };
+}
+        
         if (
           operation?.intent !==
           'create_batch'
@@ -577,58 +741,79 @@ function normalizeHaccpInterpretation(
       firstOperation.data
   };
 
+const hasCreateBatch =
+  normalizedOperations.some(
+    operation =>
+      operation?.intent ===
+      'create_batch'
+  );
 
-  const hasCreateBatch =
-    normalizedOperations.some(
-      operation =>
-        operation?.intent ===
-        'create_batch'
-    );
+
+const hasStartProduction =
+  normalizedOperations.some(
+    operation =>
+      operation?.intent ===
+      'start_production'
+  );
 
 
-  if (uniqueMissing.length) {
+const hasManagedWrite =
+  hasCreateBatch ||
+  hasStartProduction;
 
-    normalized.ready =
-      false;
 
-    normalized.requires_confirmation =
-      true;
+if (uniqueMissing.length) {
 
-    normalized.question =
-      `Yeni üretim partisi için eksik bilgiler: ${uniqueMissing.join(', ')}.`;
+  normalized.ready =
+    false;
 
-    return normalized;
-  }
+  normalized.requires_confirmation =
+    true;
 
+  normalized.question =
+    hasStartProduction &&
+    !hasCreateBatch
+      ? `Yeni üretim başlangıcı için eksik bilgiler: ${uniqueMissing.join(', ')}.`
+      : `Eksik bilgiler: ${uniqueMissing.join(', ')}.`;
+
+  return normalized;
+}
+
+
+if (
+  hasManagedWrite &&
+  normalizedOperations.every(
+    operation =>
+      [
+        'create_batch',
+        'start_production'
+      ].includes(
+        operation?.intent
+      )
+  )
+) 
+
+{
+
+  normalized.ready =
+    true;
+
+  normalized.requires_confirmation =
+    true;
+
+  normalized.question =
+    null;
 
   if (
-    hasCreateBatch &&
-    normalizedOperations.every(
-      operation =>
-        operation?.intent ===
-        'create_batch'
-    )
+    normalizedOperations.length === 1
   ) {
 
-    normalized.ready =
-      true;
-
-    normalized.requires_confirmation =
-      true;
-
-    normalized.question =
-      null;
-
-    if (
-      normalizedOperations.length === 1
-    ) {
-
-      normalized.summary =
-        normalizedOperations[0]
-          .summary;
-    }
+    normalized.summary =
+      normalizedOperations[0]
+        .summary;
   }
-
+}
+ 
 
   return normalized;
 }
@@ -863,16 +1048,17 @@ ${getHaccpToday()}
 Kullanıcı "bugün" derse bu tarihi kullan.
 
 Eğer kullanıcı mesajında
-"DEVAM EDEN YENİ PARTİ TASLAĞI"
+"DEVAM EDEN GİRİŞ TASLAĞI"
 bölümü varsa:
 
-- Bu mesaj mevcut create_batch akışının devamıdır.
 - Taslakta daha önce doldurulmuş bilgileri koru.
 - Kullanıcı açıkça değiştirmedikçe mevcut değerleri değiştirme.
 - Kullanıcının yeni mesajını yalnızca eksik bilgileri tamamlamak için kullan.
-- Kullanıcı yeni mesajda sadece "EK-1", "12 adet", "1 batch" gibi kısa cevaplar verebilir.
-- Bunları mevcut taslağın doğru eksik alanlarına yerleştir.
-- intent create_batch olarak kalmalıdır.
+- Taslaktaki mevcut intent değerini koru.
+- Taslak start_production ise intent start_production olarak kalmalıdır.
+- Taslak create_batch ise intent create_batch olarak kalmalıdır.
+- Kullanıcı sadece "09:10", "3 batch", "EK-1" gibi kısa cevaplar verebilir.
+- Bu kısa cevabı taslaktaki doğru eksik alana yerleştir.
 - Daha önce bilinen bilgileri tekrar sorma.
 
 record_process_measurement için data:
@@ -943,7 +1129,7 @@ operations içinde iki ayrı işlem üret:
               content:
                 intakeDraft
                   ? [
-                      'DEVAM EDEN YENİ PARTİ TASLAĞI:',
+                      'DEVAM EDEN GİRİŞ TASLAĞI:',
                       JSON.stringify(
                         intakeDraft
                       ),
