@@ -2312,7 +2312,7 @@ return {
     normalizeCommandText(text);
 
   if (
-    /açık.*üretim|üretim.*listele|üretim.*göster/i
+    /açık.*üretim|üretim.*listele/i
       .test(lookupText)
   ) {
 
