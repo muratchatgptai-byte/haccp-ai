@@ -2409,54 +2409,42 @@ return {
       dessert: 'Sütlü Tatlı'
     };
 
-    const processDefinitions = [
+   const processDefinitions = [
       {
-        pattern:
-          /son\s*(?:ısı|isi|ısıl\s*işlem)/i,
-        name: 'Son ısıl işlem',
-        kind: 'temperature'
+        pattern: /son\s*(?:ısı|isi|ısıl\s*işlem)/i,
+        name: 'Son ısıl işlem'
       },
       {
-        pattern:
-          /kültür\s*ekleme\s*sıcaklığı|kultur\s*ekleme\s*sicakligi|kültür\s+\d|kultur\s+\d/i,
-        name: 'Kültür ekleme sıcaklığına soğutma',
-        kind: 'temperature'
+        pattern: /kültür\s*ekleme\s*sıcaklığı|kultur\s*ekleme\s*sicakligi/i,
+        name: 'Kültür ekleme sıcaklığına soğutma'
       },
       {
-        pattern:
-          /fermantasyon\s*kabinine\s*(?:alma|alındı|alindi|kondu)/i,
-        name: 'Fermantasyon kabinine alma',
-        kind: 'event'
+        pattern: /fermantasyon\s*kabinine\s*(?:alma|alındı|alindi|kondu)/i,
+        name: 'Fermantasyon kabinine alma'
       },
       {
-        pattern:
-          /homojenizasyon|homojenizerden\s*geçti/i,
-        name: 'Homojenizasyon ve aynı kazana dönüş',
-        kind: 'event'
+        pattern: /homojenizasyon|homojenizerden\s*geçti/i,
+        name: 'Homojenizasyon ve aynı kazana dönüş'
       },
       {
-        pattern:
-          /kültür\s*eklendi|kultur\s*eklendi/i,
-        name: 'Kültür ekleme',
-        kind: 'event'
+        pattern: /kültür\s*eklendi|kultur\s*eklendi/i,
+        name: 'Kültür ekleme'
       },
       {
-        pattern:
-          /(?:son\s*)?ambalajlara\s*dolum|dolum\s*(?:başladı|bitti|tamamlandı)/i,
-        name: 'Son ambalajlara dolum',
-        kind: 'event'
+        pattern: /dolum\s*(?:başladı|bitti|tamamlandı)|ambalajlara\s*dolum/i,
+        name: 'Son ambalajlara dolum'
       },
       {
-        pattern:
-          /kapak(?:lar)?\s*(?:kapatıldı|kapandi|kapandı)/i,
-        name: 'Kapak kapatma',
-        kind: 'event'
+        pattern: /kapak(?:lar)?\s*(?:kapatıldı|kapandi|kapandı)/i,
+        name: 'Kapak kapatma'
       },
       {
-        pattern:
-          /tartım\s*(?:bitti|tamamlandı)|kazana\s*alma/i,
-        name: 'Tartım ve kazana alma',
-        kind: 'event'
+        pattern: /tartım\s*(?:bitti|tamamlandı)|kazana\s*alma/i,
+        name: 'Tartım ve kazana alma'
+      },
+      {
+        pattern: /(?:ilk\s*)?(?:ısıtma|isitma|pişirme|pisirme)\s*(?:bitti|tamamlandı)/i,
+        name: 'İlk ısıtma/pişirme'
       }
     ];
 
@@ -2482,33 +2470,15 @@ return {
           ? `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`
           : '';
 
-      let measurement = '';
+     const measurement = '';
 
-      if (definition.kind === 'temperature') {
-
-        const temperatureMatch =
-          processCommand.match(
-            /(\d+(?:[.,]\d+)?)\s*(?:derece|°c|c)\b/i
-          );
-
-        if (temperatureMatch) {
-          measurement =
-            temperatureMatch[1].replace(',', '.');
-        }
-
-      } else {
-        measurement = 'Tamamlandı';
-      }
-
-      if (!measurement || !measurementTime) {
+      if (!measurementTime) {
 
         return {
           type: 'question',
           question:
-            'Bu proses kaydı için ' +
-            (!measurement ? 'ölçüm ve ' : '') +
-            'saat bilgisi gerekli. Örnek: ' +
-            'HACCP ekşi son ısı 76 derece 11:35'
+            'İşlemin tamamlandığı saati belirt. ' +
+            'Örnek: HACCP ekşi homojenizasyon bitti 11:15'
         };
       }
 
@@ -2578,14 +2548,11 @@ return {
 
       const production = productions[0];
 
-      const measurementLabel =
-        definition.kind === 'temperature'
-          ? `${measurement}°C`
-          : measurement;
 
-      const summary =
+        const summary =
         `${production.production_date} ${production.product_name}: ` +
-        `${definition.name}, ${measurementLabel}, saat ${measurementTime} kaydedilecek.`;
+        `${definition.name} tamamlanma saati ${measurementTime} kaydedilecek.`;
+      
 
       const pendingOperation = {
         intent:
