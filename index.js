@@ -2268,7 +2268,81 @@ return {
     };
   }
 
+// ==========================================================
+  // 6.5.2 - OPEN PRODUCTION LOOKUP
+  // ==========================================================
 
+  const lookupText =
+    normalizeCommandText(text);
+
+  if (
+    /açık.*üretim|üretim.*listele|üretim.*göster/i
+      .test(lookupText)
+  ) {
+
+    let productType = '';
+
+    if (/ekşi|pavlaka/i.test(lookupText)) {
+      productType = 'sour_cream';
+    } else if (/peynir|stp/i.test(lookupText)) {
+      productType = 'stp';
+    } else if (/tatlı/i.test(lookupText)) {
+      productType = 'dessert';
+    }
+
+    const result =
+      await callHaccpBridge(
+        'get_open_productions',
+        {
+          product_type: productType
+        }
+      );
+
+    if (!result?.ok) {
+
+      return {
+        type: 'lookup_failed',
+        message:
+          result?.error ||
+          'Açık üretimler sorgulanamadı.'
+      };
+    }
+
+    const productions =
+      result.productions || [];
+
+    if (!productions.length) {
+
+      return {
+        type: 'lookup_result',
+        message:
+          'Açık üretim bulunamadı.'
+      };
+    }
+
+    const lines = productions.map(
+      (production, index) => {
+
+        return (
+          (index + 1) + '. ' +
+          production.product_name +
+          ' | ' +
+          production.production_date +
+          ' | ' +
+          production.batch_count +
+          ' batch | ' +
+          production.start_time
+        );
+      }
+    );
+
+    return {
+      type: 'lookup_result',
+      message:
+        'Açık üretimler:\n' +
+        lines.join('\n')
+    };
+  }
   
   // ----------------------------------------------------------
   // INTERPRET NEW MESSAGE
