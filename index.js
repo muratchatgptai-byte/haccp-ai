@@ -633,7 +633,10 @@ function normalizeHaccpInterpretation(
   return normalized;
 }
 
-async function interpretHaccpMessage(text) {
+async function interpretHaccpMessage(
+  text,
+  intakeDraft = null
+) {
 
   if (!OPENAI_API_KEY) {
     throw new Error(
@@ -811,6 +814,19 @@ ${getHaccpToday()}
 
 Kullanıcı "bugün" derse bu tarihi kullan.
 
+Eğer kullanıcı mesajında
+"DEVAM EDEN YENİ PARTİ TASLAĞI"
+bölümü varsa:
+
+- Bu mesaj mevcut create_batch akışının devamıdır.
+- Taslakta daha önce doldurulmuş bilgileri koru.
+- Kullanıcı açıkça değiştirmedikçe mevcut değerleri değiştirme.
+- Kullanıcının yeni mesajını yalnızca eksik bilgileri tamamlamak için kullan.
+- Kullanıcı yeni mesajda sadece "EK-1", "12 adet", "1 batch" gibi kısa cevaplar verebilir.
+- Bunları mevcut taslağın doğru eksik alanlarına yerleştir.
+- intent create_batch olarak kalmalıdır.
+- Daha önce bilinen bilgileri tekrar sorma.
+
 record_process_measurement için data:
 
 {
@@ -872,11 +888,28 @@ operations içinde iki ayrı işlem üret:
               role: 'system',
               content: systemPrompt
             },
-            {
+
+           {
               role: 'user',
+
               content:
-                String(text || '')
+                intakeDraft
+                  ? [
+                      'DEVAM EDEN YENİ PARTİ TASLAĞI:',
+                      JSON.stringify(
+                        intakeDraft
+                      ),
+                      '',
+                      'KULLANICININ YENİ MESAJI:',
+                      String(
+                        text || ''
+                      )
+                    ].join('\n')
+                  : String(
+                      text || ''
+                    )
             }
+            
           ],
 
           reasoning: {
@@ -1589,8 +1622,22 @@ async function processHaccpMessage(
   }
 
 
-  const pending =
+  const storedState =
     pendingState.pending;
+
+
+  const intakeDraft =
+    storedState
+      ?.state_kind ===
+      'intake_draft'
+      ? storedState
+      : null;
+
+
+  const pending =
+    intakeDraft
+      ? null
+      : storedState;
 
 
  if (
@@ -1900,19 +1947,131 @@ async function processHaccpMessage(
   // INTERPRET NEW MESSAGE
   // ----------------------------------------------------------
 
+   if (
+    intakeDraft &&
+    [
+      'iptal',
+      'vazgeç',
+      'vazgec'
+    ].includes(
+      normalizeCommandText(
+        text
+      )
+    )
+  ) {
+
+    const clearDraftResult =
+      await clearPendingConfirmation(
+        key
+      );
+
+
+    if (!clearDraftResult.ok) {
+
+      return {
+        type:
+          'intake_draft_cancellation_failed',
+
+        message:
+          'Yeni parti taslağı silinemedi.',
+
+        error:
+          clearDraftResult.error,
+
+        bridge_result:
+          clearDraftResult.bridge_result
+      };
+    }
+
+
+    return {
+      type:
+        'cancelled',
+
+      message:
+        'Yeni parti taslağı iptal edildi.'
+    };
+  }
+
+
   const interpretation =
     await interpretHaccpMessage(
-      text
+      text,
+      intakeDraft
     );
 
 
   if (!interpretation?.ready) {
 
+    const hasCreateBatchDraft =
+      Array.isArray(
+        interpretation?.operations
+      ) &&
+      interpretation.operations.some(
+        operation =>
+          operation?.intent ===
+          'create_batch'
+      );
+
+
+    if (hasCreateBatchDraft) {
+
+      const draftInterpretation = {
+        ...interpretation,
+
+        state_kind:
+          'intake_draft',
+
+        actor_id:
+          actorId,
+
+        actor_name:
+          actorName
+      };
+
+
+      const draftSaved =
+        await persistPendingConfirmation(
+          key,
+          draftInterpretation,
+          actorId,
+          actorName
+        );
+
+
+      if (!draftSaved.ok) {
+
+        return {
+          type:
+            'intake_draft_persistence_failed',
+
+          message:
+            'Yeni parti taslağı kalıcı olarak saklanamadı.',
+
+          error:
+            draftSaved.error,
+
+          bridge_result:
+            draftSaved.bridge_result
+        };
+      }
+
+
+      pendingConfirmations.set(
+        key,
+        draftInterpretation
+      );
+    }
+
+
     return {
-      type: 'question',
+      type:
+        'question',
+
       question:
         interpretation?.question ||
         'Eksik bilgi var.',
+
       interpretation
     };
   }
@@ -1992,9 +2151,11 @@ async function processHaccpMessage(
       })
     );
 
-
-  const pendingInterpretation = {
+ const pendingInterpretation = {
     ...interpretation,
+
+    state_kind:
+      'confirmation',
 
     operations:
       pendingOperations,
@@ -2005,6 +2166,7 @@ async function processHaccpMessage(
     actor_name:
       actorName
   };
+  
 
 
   const persistentPending =
