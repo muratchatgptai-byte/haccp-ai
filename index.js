@@ -2380,6 +2380,128 @@ return {
     };
   }
 
+
+// ==========================================================
+  // 6.5.8 - MISSING PRODUCTION RECORDS LOOKUP
+  // ==========================================================
+
+  const missingCommand =
+    normalizeCommandText(text);
+
+  if (
+    /eksik.*(?:kayıt|kayit|proses)|(?:kayıt|kayit|proses).*eksik/i
+      .test(missingCommand)
+  ) {
+
+    let productType = '';
+
+    if (/ekşi|eksi|pavlaka/i.test(missingCommand)) {
+      productType = 'sour_cream';
+    } else if (/peynir|stp/i.test(missingCommand)) {
+      productType = 'stp';
+    } else if (/tatlı|tatli/i.test(missingCommand)) {
+      productType = 'dessert';
+    }
+
+    if (!productType) {
+      return {
+        type: 'question',
+        question:
+          'Hangi ürünün eksik kayıtlarını görmek istiyorsun?'
+      };
+    }
+
+    const lookup =
+      await callHaccpBridge(
+        'get_open_productions',
+        {
+          product_type: productType
+        }
+      );
+
+    if (!lookup?.ok) {
+      return {
+        type: 'lookup_failed',
+        message:
+          lookup?.error ||
+          'Açık üretimler sorgulanamadı.'
+      };
+    }
+
+    const productions =
+      lookup.productions || [];
+
+    if (!productions.length) {
+      return {
+        type: 'lookup_result',
+        message:
+          'Bu ürüne ait açık üretim bulunamadı.'
+      };
+    }
+
+    if (productions.length > 1) {
+
+      const options = productions.map(
+        (production, index) =>
+          `${index + 1}. ${production.production_date} - ${production.batch_count} batch - ${production.start_time}`
+      );
+
+      return {
+        type: 'multiple_open_productions',
+        message:
+          'Birden fazla açık üretim var:\n' +
+          options.join('\n') +
+          '\nHangi üretimi kontrol edeceğimizi belirt. Kontrol yapılmadı.'
+      };
+    }
+
+    const production = productions[0];
+
+    const result =
+      await callHaccpBridge(
+        'get_missing_production_records',
+        {
+          production_id:
+            production.production_id
+        }
+      );
+
+    if (!result?.ok) {
+      return {
+        type: 'lookup_failed',
+        message:
+          result?.error ||
+          'Eksik kayıt kontrolü yapılamadı.'
+      };
+    }
+
+    const missing =
+      Array.isArray(result.missing)
+        ? result.missing
+        : [];
+
+    const details = missing.map(
+      item => '- ' + item.process
+    );
+
+    const summary =
+      `${result.production_date} ${result.product_name}\n` +
+      `Toplam proses: ${result.total_processes}\n` +
+      `Saat kaydı bulunan: ${result.completed_count}\n` +
+      `Saat kaydı eksik: ${result.missing_count}`;
+
+    return {
+      type: 'lookup_result',
+      message:
+        missing.length
+          ? summary +
+            '\n\nSaat kaydı eksik aşamalar:\n' +
+            details.join('\n')
+          : summary +
+            '\n\nTüm proses saatleri kayıtlı.'
+    };
+  }
+  
 // ==========================================================
   // 6.5.5 - PRODUCTION PROCESS RECORDS
   // ==========================================================
