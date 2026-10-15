@@ -656,6 +656,7 @@ Sadece ne yapılmak istendiğini belirle.
 Desteklenen intent değerleri:
 
 get_batch
+start_production
 create_batch
 record_process_measurement
 record_ph
@@ -663,6 +664,7 @@ unknown
 
 Yazma işlemleri:
 
+start_production
 create_batch
 record_process_measurement
 record_ph
@@ -750,6 +752,49 @@ Format:
     }
   ]
 }
+
+start_production için data:
+
+{
+  "product_type": "sour_cream | stp | dessert",
+  "product_name": "",
+  "recipe": "",
+  "batch_count": "",
+  "production_date": "",
+  "start_time": ""
+}
+
+start_production kuralları:
+
+- Bu işlem mamul partisi oluşturmaz.
+- Parti numarası oluşturma.
+- Bu intent kazandaki ortak üretim/proses başlangıcı içindir.
+- Kullanıcı "ekşi krema 3 batch başladı 09:10" gibi yazarsa start_production kullan.
+- sour_cream = Ekşi Krema
+- stp = Taze Peynir
+- dessert = Sütlü Tatlı
+- batch_count reçetenin kaç kez yapıldığını ifade eder.
+- batch_count ambalaj adedi değildir.
+- Gramaj ve ürün adedi üretim başlangıcında istenmez.
+- Farklı ambalajlara ait parti numaraları daha sonra dolum bilgisi geldiğinde oluşturulacaktır.
+- production_date kullanıcı tarih belirtmezse bugünün tarihi olsun.
+- start_time gerçek üretim başlangıç saatidir.
+- Zorunlu bilgiler: product_type, batch_count, production_date, start_time.
+- product_name ürün tipine göre Ekşi Krema, Taze Peynir veya Sütlü Tatlı olarak doldurulabilir.
+- recipe eksikse üretim başlangıcını engelleme.
+- Eksik zorunlu bilgi varsa yalnızca eksik bilgiyi sor.
+
+Örnek:
+
+Kullanıcı:
+"Ekşi krema 3 batch 09:10"
+
+start_production üret:
+product_type = sour_cream
+product_name = Ekşi Krema
+batch_count = 3
+production_date = bugünün tarihi
+start_time = 09:10
 
 create_batch için data:
 
@@ -1331,7 +1376,41 @@ async function executeHaccpInterpretation(
     );
   }
 
+if (intent === 'start_production') {
 
+  return callHaccpBridge(
+    'start_production',
+    {
+      operation_id:
+        interpretation.operation_id,
+
+      actor_id:
+        interpretation.actor_id,
+
+      actor_name:
+        interpretation.actor_name,
+
+      product_type:
+        data.product_type,
+
+      product_name:
+        data.product_name,
+
+      recipe:
+        data.recipe,
+
+      batch_count:
+        data.batch_count,
+
+      production_date:
+        data.production_date,
+
+      start_time:
+        data.start_time
+    }
+  );
+}
+  
   if (intent === 'create_batch') {
 
     return callHaccpBridge(
@@ -2031,18 +2110,22 @@ const firstWriteResult =
 
   if (!interpretation?.ready) {
 
-    const hasCreateBatchDraft =
-      Array.isArray(
-        interpretation?.operations
-      ) &&
-      interpretation.operations.some(
-        operation =>
-          operation?.intent ===
-          'create_batch'
-      );
+    const hasIntakeDraft =
+  Array.isArray(
+    interpretation?.operations
+  ) &&
+  interpretation.operations.some(
+    operation =>
+      [
+        'create_batch',
+        'start_production'
+      ].includes(
+        operation?.intent
+      )
+  );
 
 
-    if (hasCreateBatchDraft) {
+if (hasIntakeDraft) {
 
       const draftInterpretation = {
         ...interpretation,
