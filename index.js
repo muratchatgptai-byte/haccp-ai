@@ -1165,15 +1165,77 @@ async function processHaccpMessage(
         };
       }
 
+ const failedResult =
+        result
+          ?.results
+          ?.[result.failed_index];
+
+
+      const definitiveFailure =
+        failedResult
+          ?.bridge_result
+          ?.ok === false;
+
+
+      if (definitiveFailure) {
+
+        const clearResult =
+          await clearPendingConfirmation(
+            key
+          );
+
+
+        if (!clearResult.ok) {
+
+          return {
+            type:
+              'execution_failed_cleanup_failed',
+
+            summary:
+              pending.summary || '',
+
+            message:
+              'İşlem başarısız oldu ancak bekleyen onay kaydı temizlenemedi.',
+
+            operation_results:
+              result?.results || [],
+
+            cleanup_result:
+              clearResult.bridge_result
+          };
+        }
+
+
+        return {
+          type:
+            'execution_failed',
+
+          summary:
+            pending.summary || '',
+
+          message:
+            `İşlem kaydedilemedi: ${
+              failedResult
+                ?.bridge_result
+                ?.error ||
+              'İşlem başarısız oldu.'
+            }`,
+
+          operation_results:
+            result?.results || []
+        };
+      }
+
 
       return {
-        type: 'execution_failed',
+        type:
+          'execution_uncertain',
 
         summary:
           pending.summary || '',
 
         message:
-          'İşlem kaydedilemedi.',
+          'İşlem sonucu kesinleştirilemedi. Bekleyen onay güvenlik için korundu.',
 
         operation_results:
           result?.results || [],
@@ -1181,6 +1243,7 @@ async function processHaccpMessage(
         bridge_result:
           result
       };
+      
     }
   
 
