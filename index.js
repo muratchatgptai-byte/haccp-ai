@@ -2139,39 +2139,73 @@ async function processHaccpMessage(
     
 
 const firstWriteResult =
-      result
-        ?.results
-        ?.[0]
-        ?.bridge_result;
+  result
+    ?.results
+    ?.[0]
+    ?.bridge_result;
 
 
-    const createdBatchNo =
-      firstWriteResult
-        ?.action ===
-        'create_batch'
-          ? String(
-              firstWriteResult
-                ?.batch
-                ?.batch_no ||
-              ''
-            ).trim()
-          : '';
-    
-    
-    return {
-      type: 'executed',
+const createdBatchNo =
+  firstWriteResult
+    ?.action ===
+    'create_batch'
+      ? String(
+          firstWriteResult
+            ?.batch
+            ?.batch_no ||
+          ''
+        ).trim()
+      : '';
 
-      summary:
-        pending.summary || '',
 
-      message:
-        createdBatchNo
-          ? `Parti ${createdBatchNo} oluşturuldu ve doğrulandı.`
-          : 'İşlem başarıyla kaydedildi.',
+const startedProduction =
+  firstWriteResult
+    ?.action ===
+    'start_production'
+      ? firstWriteResult.production
+      : null;
 
-      bridge_result:
-        result
-    };
+
+const startedProductionName =
+  String(
+    startedProduction
+      ?.product_name ||
+    ''
+  ).trim();
+
+
+const startedBatchCount =
+  String(
+    startedProduction
+      ?.batch_count ||
+    ''
+  ).trim();
+
+
+const startedStartTime =
+  String(
+    startedProduction
+      ?.start_time ||
+    ''
+  ).trim();
+
+
+return {
+  type: 'executed',
+
+  summary:
+    pending.summary || '',
+
+  message:
+    createdBatchNo
+      ? `Parti ${createdBatchNo} oluşturuldu ve doğrulandı.`
+      : startedProduction
+        ? `${startedProductionName} üretimi açıldı. ${startedBatchCount} batch, başlangıç ${startedStartTime}.`
+        : 'İşlem başarıyla kaydedildi.',
+
+  bridge_result:
+    result
+};
     
 
     
