@@ -478,94 +478,155 @@ async function loadPendingConfirmation(
   }
 
 
-  try {
+  let lastError =
+    null;
 
-    const result =
-      await callHaccpBridge(
-        'get_pending_confirmation',
-        {
-          session_id:
-            key
-        }
-      );
+  let lastBridgeResult =
+    null;
 
 
-    if (!result?.ok) {
+  for (
+    let attempt = 1;
+    attempt <= 2;
+    attempt++
+  ) {
 
-      return {
-        ok: false,
+    try {
 
-        error:
+      const result =
+        await callHaccpBridge(
+          'get_pending_confirmation',
+          {
+            session_id:
+              key
+          }
+        );
+
+
+      lastBridgeResult =
+        result;
+
+
+      if (!result?.ok) {
+
+        lastError =
           result?.error ||
-          'Bekleyen onay okunamadı',
-
-        bridge_result:
-          result
-      };
-    }
+          'Bekleyen onay okunamadı';
 
 
-    if (!result.found) {
+        console.error(
+          JSON.stringify({
+            type:
+              'pending_confirmation_read_failed',
 
-      return {
-        ok: true,
-        pending: null,
-        source:
-          'bridge'
-      };
-    }
+            session_id:
+              key,
 
+            attempt,
 
-    if (
-      !result.pending ||
-      typeof result.pending !==
-        'object' ||
-      Array.isArray(
-        result.pending
-      )
-    ) {
+            error:
+              lastError
+          })
+        );
 
-      return {
-        ok: false,
+      } else {
 
-        error:
-          'Bekleyen onay verisi geçersiz',
+        if (!result.found) {
 
-        bridge_result:
-          result
-      };
-    }
+          return {
+            ok: true,
+            pending: null,
+            source:
+              'bridge'
+          };
+        }
 
 
-    pendingConfirmations.set(
-      key,
-      result.pending
-    );
+        if (
+          !result.pending ||
+          typeof result.pending !==
+            'object' ||
+          Array.isArray(
+            result.pending
+          )
+        ) {
+
+          return {
+            ok: false,
+
+            error:
+              'Bekleyen onay verisi geçersiz',
+
+            bridge_result:
+              result
+          };
+        }
 
 
-    return {
-      ok: true,
+        pendingConfirmations.set(
+          key,
+          result.pending
+        );
 
-      pending:
-        result.pending,
 
-      source:
-        'bridge'
-    };
+        return {
+          ok: true,
 
-  } catch (err) {
+          pending:
+            result.pending,
 
-    return {
-      ok: false,
+          source:
+            'bridge'
+        };
+      }
 
-      error:
+    } catch (err) {
+
+      lastError =
         err?.message ||
-        String(err),
+        String(err);
 
-      bridge_result:
-        null
-    };
+
+      console.error(
+        JSON.stringify({
+          type:
+            'pending_confirmation_read_failed',
+
+          session_id:
+            key,
+
+          attempt,
+
+          error:
+            lastError
+        })
+      );
+    }
+
+
+    if (attempt < 2) {
+
+      await new Promise(
+        resolve =>
+          setTimeout(
+            resolve,
+            750
+          )
+      );
+    }
   }
+
+
+  return {
+    ok: false,
+
+    error:
+      lastError ||
+      'Bekleyen onay okunamadı',
+
+    bridge_result:
+      lastBridgeResult
+  };
 }
 
 
