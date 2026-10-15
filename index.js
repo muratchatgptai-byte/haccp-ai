@@ -1,6 +1,6 @@
 'use strict';
 
-const http = require('http');
+const { randomUUID } = require('crypto');
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -447,6 +447,9 @@ async function executeHaccpInterpretation(
     return callHaccpBridge(
       'create_batch',
       {
+        operation_id:
+          interpretation.operation_id,
+
         product_type:
           data.product_type,
 
@@ -465,6 +468,9 @@ async function executeHaccpInterpretation(
     return callHaccpBridge(
       'record_process_measurement',
       {
+        operation_id:
+          interpretation.operation_id,
+
         batch_no:
           data.batch_no,
 
@@ -488,7 +494,10 @@ async function executeHaccpInterpretation(
 
     return callHaccpBridge(
       'record_ph',
-      {
+       {
+        operation_id:
+          interpretation.operation_id,
+
         batch_no:
           data.batch_no,
 
@@ -711,9 +720,17 @@ async function processHaccpMessage(
   // WRITE OPERATIONS WAIT FOR YES
   // ----------------------------------------------------------
 
+   const pendingInterpretation = {
+    ...interpretation,
+    operation_id:
+      interpretation.operation_id ||
+      randomUUID()
+  };
+
+
   pendingConfirmations.set(
     key,
-    interpretation
+    pendingInterpretation
   );
 
 
@@ -727,7 +744,8 @@ async function processHaccpMessage(
     message:
       `${interpretation.summary} Onaylıyor musun?`,
 
-    interpretation
+    interpretation:
+      pendingInterpretation
   };
 }
 
