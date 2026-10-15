@@ -1891,25 +1891,6 @@ const firstWriteResult =
               ''
             ).trim()
           : '';
-
-const firstWriteResult =
-  result
-    ?.results
-    ?.[0]
-    ?.bridge_result;
-
-
-const createBatchNo =
-  firstWriteResult
-    ?.action ===
-    'create_batch'
-      ? String(
-          firstWriteResult
-            ?.batch
-            ?.batch_no ||
-          ''
-        ).trim()
-      : '';
     
     
     return {
