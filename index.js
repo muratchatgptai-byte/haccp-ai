@@ -453,6 +453,247 @@ const pendingConfirmations =
 const executingConfirmations =
   new Set();
 
+async function loadPendingConfirmation(
+  key
+) {
+
+  const local =
+    pendingConfirmations.get(
+      key
+    );
+
+
+  if (local) {
+
+    return {
+      ok: true,
+      pending:
+        local,
+      source:
+        'memory'
+    };
+  }
+
+
+  try {
+
+    const result =
+      await callHaccpBridge(
+        'get_pending_confirmation',
+        {
+          session_id:
+            key
+        }
+      );
+
+
+    if (!result?.ok) {
+
+      return {
+        ok: false,
+
+        error:
+          result?.error ||
+          'Bekleyen onay okunamadı',
+
+        bridge_result:
+          result
+      };
+    }
+
+
+    if (!result.found) {
+
+      return {
+        ok: true,
+        pending: null,
+        source:
+          'bridge'
+      };
+    }
+
+
+    if (
+      !result.pending ||
+      typeof result.pending !==
+        'object' ||
+      Array.isArray(
+        result.pending
+      )
+    ) {
+
+      return {
+        ok: false,
+
+        error:
+          'Bekleyen onay verisi geçersiz',
+
+        bridge_result:
+          result
+      };
+    }
+
+
+    pendingConfirmations.set(
+      key,
+      result.pending
+    );
+
+
+    return {
+      ok: true,
+
+      pending:
+        result.pending,
+
+      source:
+        'bridge'
+    };
+
+  } catch (err) {
+
+    return {
+      ok: false,
+
+      error:
+        err?.message ||
+        String(err),
+
+      bridge_result:
+        null
+    };
+  }
+}
+
+
+async function persistPendingConfirmation(
+  key,
+  pending,
+  actorId,
+  actorName
+) {
+
+  try {
+
+    const result =
+      await callHaccpBridge(
+        'save_pending_confirmation',
+        {
+          session_id:
+            key,
+
+          actor_id:
+            actorId,
+
+          actor_name:
+            actorName,
+
+          pending
+        }
+      );
+
+
+    if (
+      !result?.ok ||
+      result?.verified !== true
+    ) {
+
+      return {
+        ok: false,
+
+        error:
+          result?.error ||
+          'Bekleyen onay kaydedilemedi',
+
+        bridge_result:
+          result
+      };
+    }
+
+
+    return {
+      ok: true,
+      bridge_result:
+        result
+    };
+
+  } catch (err) {
+
+    return {
+      ok: false,
+
+      error:
+        err?.message ||
+        String(err),
+
+      bridge_result:
+        null
+    };
+  }
+}
+
+
+async function clearPendingConfirmation(
+  key
+) {
+
+  try {
+
+    const result =
+      await callHaccpBridge(
+        'delete_pending_confirmation',
+        {
+          session_id:
+            key
+        }
+      );
+
+
+    if (
+      !result?.ok ||
+      result?.verified !== true
+    ) {
+
+      return {
+        ok: false,
+
+        error:
+          result?.error ||
+          'Bekleyen onay silinemedi',
+
+        bridge_result:
+          result
+      };
+    }
+
+
+    pendingConfirmations.delete(
+      key
+    );
+
+
+    return {
+      ok: true,
+      bridge_result:
+        result
+    };
+
+  } catch (err) {
+
+    return {
+      ok: false,
+
+      error:
+        err?.message ||
+        String(err),
+
+      bridge_result:
+        null
+    };
+  }
+}
+
+
 function normalizeCommandText(text) {
 
   return String(text || '')
@@ -785,10 +1026,32 @@ async function processHaccpMessage(
       ''
     ).trim();
 
-  const pending =
-    pendingConfirmations.get(
+  const pendingState =
+    await loadPendingConfirmation(
       key
     );
+
+
+  if (!pendingState.ok) {
+
+    return {
+      type:
+        'pending_state_unavailable',
+
+      message:
+        'Bekleyen onay durumu kontrol edilemedi. Güvenlik için yeni işlem başlatılmadı.',
+
+      error:
+        pendingState.error,
+
+      bridge_result:
+        pendingState.bridge_result
+    };
+  }
+
+
+  const pending =
+    pendingState.pending;
 
 
  if (
@@ -858,10 +1121,32 @@ async function processHaccpMessage(
 
       if (result?.partial_failure) {
 
-        pendingConfirmations.delete(
-          key
-        );
+        
+      const clearResult =
+          await clearPendingConfirmation(
+            key
+          );
 
+
+        if (!clearResult.ok) {
+
+          return {
+            type:
+              'partial_failure_cleanup_failed',
+
+            summary:
+              pending.summary || '',
+
+            message:
+              'Bazı işlemler tamamlandı ancak başarısız işlem var ve bekleyen onay kaydı temizlenemedi.',
+
+            operation_results:
+              result.results || [],
+
+            cleanup_result:
+              clearResult.bridge_result
+          };
+        }
 
         return {
           type: 'partial_failure',
@@ -909,10 +1194,32 @@ async function processHaccpMessage(
       };
     }
     
+    const clearResult =
+      await clearPendingConfirmation(
+        key
+      );
 
-    pendingConfirmations.delete(
-      key
-    );
+
+    if (!clearResult.ok) {
+
+      return {
+        type:
+          'executed_cleanup_failed',
+
+        summary:
+          pending.summary || '',
+
+        message:
+          'İşlem başarıyla kaydedildi ve doğrulandı ancak bekleyen onay kaydı temizlenemedi.',
+
+        bridge_result:
+          result,
+
+        cleanup_result:
+          clearResult.bridge_result
+      };
+    }
+    
 
 
     return {
@@ -938,9 +1245,28 @@ async function processHaccpMessage(
     isConfirmationNo(text)
   ) {
 
-    pendingConfirmations.delete(
-      key
-    );
+    const clearResult =
+      await clearPendingConfirmation(
+        key
+      );
+
+
+    if (!clearResult.ok) {
+
+      return {
+        type:
+          'cancellation_failed',
+
+        message:
+          'Bekleyen işlem kalıcı kayıttan silinemedi. İptal tamamlanmadı.',
+
+        error:
+          clearResult.error,
+
+        bridge_result:
+          clearResult.bridge_result
+      };
+    }
 
 
     return {
@@ -1077,6 +1403,36 @@ async function processHaccpMessage(
     actor_name:
       actorName
   };
+
+
+  const persistentPending =
+    await persistPendingConfirmation(
+      key,
+      pendingInterpretation,
+      actorId,
+      actorName
+    );
+
+
+  if (!persistentPending.ok) {
+
+    return {
+      type:
+        'pending_persistence_failed',
+
+      summary:
+        interpretation.summary,
+
+      message:
+        'Onay bekleyen işlem kalıcı olarak saklanamadı. Güvenlik için onaya açılmadı.',
+
+      error:
+        persistentPending.error,
+
+      bridge_result:
+        persistentPending.bridge_result
+    };
+  }
 
 
   pendingConfirmations.set(
