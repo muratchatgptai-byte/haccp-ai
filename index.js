@@ -533,10 +533,29 @@ async function processHaccpMessage(
   ) {
 
 
-    const result =
-      await executeHaccpInterpretation(
-        pending
-      );
+ let result;
+
+
+    try {
+
+      result =
+        await executeHaccpInterpretation(
+          pending
+        );
+
+    } catch (err) {
+
+      return {
+        type: 'execution_failed',
+        summary:
+          pending.summary || '',
+        message:
+          'İşlem kaydedilemedi.',
+        error:
+          err?.message ||
+          String(err)
+      };
+    }
 
 
     if (!result?.ok) {
