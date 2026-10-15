@@ -340,7 +340,7 @@ function getCreateBatchMissingFields(
   ) {
 
     missing.push(
-      'planlanan miktar'
+      'miktar'
     );
   }
 
@@ -775,8 +775,11 @@ create_batch kuralları:
 
 - batch_no kullanıcıdan İSTENMEZ.
 - batch_no alanını boş bırak.
-- Parti numarasını sistem onaydan sonra global sıradan oluşturacak.
-- Örnek sıra: EK 4 -> STP 5 -> EK 6.
+- Parti numarası sistem tarafından onaydan sonra global sıradan oluşturulur.
+- Parti numarası YALNIZCA rakamdır.
+- Örnek sıra: 4 -> 5 -> 6.
+- EK-1, STP-1, ST-1 gibi değerler reçete kodudur; parti numarası değildir.
+- Parti numarasına ürün veya reçete prefix'i ekleme.
 
 - output_kg üretim bitmeden bilinmez.
 - output_kg alanını boş bırak.
@@ -1870,16 +1873,60 @@ async function processHaccpMessage(
     }
     
 
+const firstWriteResult =
+      result
+        ?.results
+        ?.[0]
+        ?.bridge_result;
 
+
+    const createdBatchNo =
+      firstWriteResult
+        ?.action ===
+        'create_batch'
+          ? String(
+              firstWriteResult
+                ?.batch
+                ?.batch_no ||
+              ''
+            ).trim()
+          : '';
+
+const firstWriteResult =
+  result
+    ?.results
+    ?.[0]
+    ?.bridge_result;
+
+
+const createBatchNo =
+  firstWriteResult
+    ?.action ===
+    'create_batch'
+      ? String(
+          firstWriteResult
+            ?.batch
+            ?.batch_no ||
+          ''
+        ).trim()
+      : '';
+    
+    
     return {
       type: 'executed',
+
       summary:
         pending.summary || '',
+
       message:
-        'İşlem başarıyla kaydedildi.',
+        createdBatchNo
+          ? `Parti ${createdBatchNo} oluşturuldu ve doğrulandı.`
+          : 'İşlem başarıyla kaydedildi.',
+
       bridge_result:
         result
     };
+    
 
     
   }
