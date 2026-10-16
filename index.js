@@ -1632,6 +1632,36 @@ if (intent === 'start_production') {
       }
     );
   }
+
+
+  if (
+  intent ===
+  'create_open_production_batch'
+) {
+
+  return callHaccpBridge(
+    'create_open_production_batch',
+    {
+      operation_id:
+        interpretation.operation_id,
+
+      actor_id:
+        interpretation.actor_id,
+
+      actor_name:
+        interpretation.actor_name,
+
+      production_id:
+        data.production_id,
+
+      product_type:
+        data.product_type,
+
+      batch:
+        data.batch
+    }
+  );
+}
   
   if (intent === 'create_batch') {
 
@@ -1974,19 +2004,31 @@ function buildOpenProductionBatchOperation(
   const summary =
     `${productionName} açık üretimine ${batch.quantity} ${batch.unit}, ${batch.grammage} gr, toplam ${totalKg} kg dolum için yeni parti oluşturulacak. Parti numarası sistem tarafından otomatik atanacak.`;
 
-  return {
-    intent: 'create_batch',
-    requires_confirmation: true,
-    summary,
-    operation_id: randomUUID(),
-    actor_id: actorId,
-    actor_name: actorName,
-    data: {
-      product_type:
-        String(production?.product_type || '').trim(),
-      batch
-    }
-  };
+
+return {
+  intent:
+    'create_open_production_batch',
+  requires_confirmation: true,
+  summary,
+  operation_id: randomUUID(),
+  actor_id: actorId,
+  actor_name: actorName,
+  data: {
+    production_id:
+      String(
+        production?.production_id ||
+        ''
+      ).trim(),
+    product_type:
+      String(
+        production?.product_type ||
+        ''
+      ).trim(),
+    batch
+  }
+};
+
+  
 }
 
 
@@ -2010,7 +2052,8 @@ async function queueOpenProductionBatchConfirmation(
     ready: true,
     requires_confirmation: true,
     summary: operation.summary,
-    intent: 'create_batch',
+    intent:
+  'create_open_production_batch',
     data: operation.data,
     operations: [operation],
     actor_id: actorId,
