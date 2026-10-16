@@ -360,12 +360,7 @@ function getCreateBatchMissingFields(
   }
 
 
-  if (!String(batch.recipe || '').trim()) {
-
-    missing.push(
-      'reçete'
-    );
-  }
+  
 
 
   if (!String(batch.product || '').trim()) {
@@ -1022,18 +1017,23 @@ create_batch kuralları:
 - invoice_info ve raw_material_lots parti açılışında opsiyoneldir.
 - Bunlar eksik diye yeni parti açılmasını engelleme.
 
+
 Yeni parti için zorunlu bilgiler:
 
 product_type
 date
-recipe
 product
 grammage
 unit
 quantity
 batch_count
 
+recipe opsiyoneldir.
+recipe boşsa eksik bilgi sayma ve kullanıcıdan isteme.
+
 Eksik zorunlu bilgiler varsa sadece eksik bilgileri sor.
+
+
 Bilinen bilgileri tekrar isteme.
 
 grammage değerini gram cinsinden sayısal döndür.
@@ -1872,6 +1872,177 @@ async function executeHaccpOperations(
     partial_failure: false,
 
     results
+  };
+}
+
+
+function getCreateBatchOperation(state) {
+  const operations = Array.isArray(state?.operations)
+    ? state.operations
+    : [];
+
+  return (
+    operations.find(item => item?.intent === 'create_batch') ||
+    (
+      state?.intent === 'create_batch'
+        ? {
+            intent: 'create_batch',
+            data: state?.data || {},
+            summary: state?.summary || ''
+          }
+        : null
+    )
+  );
+}
+
+
+function isBatchPackagingCandidate(state) {
+  const operation = getCreateBatchOperation(state);
+
+  if (!operation) {
+    return false;
+  }
+
+  const data = operation.data || {};
+  const batch = data.batch || {};
+
+  if (
+    positiveNumber(batch.grammage) === null ||
+    positiveNumber(batch.quantity) === null
+  ) {
+    return false;
+  }
+
+  return (
+    !['sour_cream', 'stp', 'dessert']
+      .includes(data.product_type) ||
+    !String(batch.date || '').trim() ||
+    !String(batch.product || '').trim() ||
+    positiveNumber(batch.batch_count) === null
+  );
+}
+
+
+function buildOpenProductionBatchOperation(
+  draft,
+  production,
+  actorId,
+  actorName
+) {
+  const source = getCreateBatchOperation(draft);
+  const sourceBatch = source?.data?.batch || {};
+
+  const grammage = positiveNumber(sourceBatch.grammage);
+  const quantity = positiveNumber(sourceBatch.quantity);
+
+  if (
+    grammage === null ||
+    quantity === null
+  ) {
+    throw new Error('Dolum gramajı veya adedi eksik');
+  }
+
+  const productionName =
+    String(production?.product_name || '').trim();
+
+  const productBase =
+    /^balkano\b/i.test(productionName)
+      ? productionName
+      : `Balkano ${productionName}`;
+
+  const batch = {
+    ...sourceBatch,
+    batch_no: '',
+    date: String(production?.production_date || '').trim(),
+    recipe: String(production?.recipe || '').trim(),
+    product:
+      `${productBase} ${grammage} gr`
+        .replace(/\s+/g, ' ')
+        .trim(),
+    grammage: String(grammage),
+    unit: String(sourceBatch.unit || 'Adet').trim(),
+    quantity: String(quantity),
+    total_production: String(grammage * quantity),
+    batch_count:
+      String(production?.batch_count || '').trim(),
+    output_kg: ''
+  };
+
+  const totalKg =
+    Number(batch.total_production) / 1000;
+
+  const summary =
+    `${productionName} açık üretimine ${batch.quantity} ${batch.unit}, ${batch.grammage} gr, toplam ${totalKg} kg dolum için yeni parti oluşturulacak. Parti numarası sistem tarafından otomatik atanacak.`;
+
+  return {
+    intent: 'create_batch',
+    requires_confirmation: true,
+    summary,
+    operation_id: randomUUID(),
+    actor_id: actorId,
+    actor_name: actorName,
+    data: {
+      product_type:
+        String(production?.product_type || '').trim(),
+      batch
+    }
+  };
+}
+
+
+async function queueOpenProductionBatchConfirmation(
+  key,
+  draft,
+  production,
+  actorId,
+  actorName
+) {
+  const operation =
+    buildOpenProductionBatchOperation(
+      draft,
+      production,
+      actorId,
+      actorName
+    );
+
+  const pendingInterpretation = {
+    state_kind: 'confirmation',
+    ready: true,
+    requires_confirmation: true,
+    summary: operation.summary,
+    intent: 'create_batch',
+    data: operation.data,
+    operations: [operation],
+    actor_id: actorId,
+    actor_name: actorName
+  };
+
+  const saved =
+    await persistPendingConfirmation(
+      key,
+      pendingInterpretation,
+      actorId,
+      actorName
+    );
+
+  if (!saved.ok) {
+    return {
+      type: 'pending_persistence_failed',
+      message:
+        'Parti onayı kaydedilemedi. İşlem yapılmadı.'
+    };
+  }
+
+  pendingConfirmations.set(
+    key,
+    pendingInterpretation
+  );
+
+  return {
+    type: 'confirmation_required',
+    message:
+      operation.summary +
+      ' Onaylıyor musun?'
   };
 }
 
@@ -2737,6 +2908,247 @@ return {
     }
   }
 
+
+  // ----------------------------------------------------------
+  // DOLUM BİLGİSİ: AÇIK ÜRETİM / YENİ ÜRETİM SEÇİMİ
+  // ----------------------------------------------------------
+
+  const destinationDraft =
+    intakeDraft &&
+    (
+      intakeDraft.await_destination ||
+      intakeDraft.await_open_production_choice ||
+      isBatchPackagingCandidate(intakeDraft)
+    )
+      ? intakeDraft
+      : null;
+
+
+  if (destinationDraft) {
+
+    const command =
+      normalizeCommandText(text);
+
+
+    if (
+      ['iptal', 'vazgeç', 'vazgec']
+        .includes(command)
+    ) {
+
+      const cleared =
+        await clearPendingConfirmation(key);
+
+      return cleared.ok
+        ? {
+            type: 'cancelled',
+            message: 'Dolum taslağı iptal edildi.'
+          }
+        : {
+            type: 'cancellation_failed',
+            message: 'Dolum taslağı iptal edilemedi.'
+          };
+    }
+
+
+    if (
+      destinationDraft
+        .await_open_production_choice
+    ) {
+
+      const productions =
+        Array.isArray(
+          destinationDraft.open_productions
+        )
+          ? destinationDraft.open_productions
+          : [];
+
+      const match =
+        command.match(/^(\d+)$/);
+
+      const index =
+        match
+          ? Number(match[1]) - 1
+          : -1;
+
+      if (
+        index < 0 ||
+        index >= productions.length
+      ) {
+
+        const options =
+          productions.map(
+            (production, i) =>
+              `${i + 1}. ${production.product_name} | ${production.production_date} | ${production.batch_count} batch | ${production.start_time}`
+          );
+
+        return {
+          type: 'question',
+          question:
+            'Hangi açık üretime bağlayayım?\n' +
+            options.join('\n') +
+            '\nNumarasını yaz.'
+        };
+      }
+
+      return queueOpenProductionBatchConfirmation(
+        key,
+        destinationDraft,
+        productions[index],
+        actorId,
+        actorName
+      );
+    }
+
+
+    const chooseOpen =
+      command === '1' ||
+      /^(?:açık|acik)\s+(?:üretim|uretim)(?:e|ine)?$/i
+        .test(command);
+
+
+    if (chooseOpen) {
+
+      const lookup =
+        await callHaccpBridge(
+          'get_open_productions',
+          {}
+        );
+
+      if (!lookup?.ok) {
+        return {
+          type: 'lookup_failed',
+          message:
+            lookup?.error ||
+            'Açık üretimler sorgulanamadı.'
+        };
+      }
+
+      const productions =
+        Array.isArray(lookup.productions)
+          ? lookup.productions
+          : [];
+
+      if (!productions.length) {
+        return {
+          type: 'question',
+          question:
+            'Açık üretim bulunamadı. Yeni üretim olarak devam etmek için “2” veya “yeni üretim” yaz.'
+        };
+      }
+
+      if (productions.length === 1) {
+        return queueOpenProductionBatchConfirmation(
+          key,
+          destinationDraft,
+          productions[0],
+          actorId,
+          actorName
+        );
+      }
+
+      const nextDraft = {
+        ...destinationDraft,
+        state_kind: 'intake_draft',
+        await_destination: false,
+        await_open_production_choice: true,
+        open_productions: productions,
+        actor_id: actorId,
+        actor_name: actorName
+      };
+
+      const saved =
+        await persistPendingConfirmation(
+          key,
+          nextDraft,
+          actorId,
+          actorName
+        );
+
+      if (!saved.ok) {
+        return {
+          type: 'pending_persistence_failed',
+          message:
+            'Açık üretim seçimi kaydedilemedi.'
+        };
+      }
+
+      pendingConfirmations.set(
+        key,
+        nextDraft
+      );
+
+      const options =
+        productions.map(
+          (production, i) =>
+            `${i + 1}. ${production.product_name} | ${production.production_date} | ${production.batch_count} batch | ${production.start_time}`
+        );
+
+      return {
+        type: 'question',
+        question:
+          'Birden fazla açık üretim var:\n' +
+          options.join('\n') +
+          '\nHangisine bağlayayım? Numarasını yaz.'
+      };
+    }
+
+
+    const chooseNew =
+      command === '2' ||
+      /^yeni\s+(?:üretim|uretim)(?:\s+olarak)?$/i
+        .test(command);
+
+
+    if (chooseNew) {
+
+      const nextDraft = {
+        ...destinationDraft,
+        state_kind: 'intake_draft',
+        await_destination: false,
+        await_open_production_choice: false,
+        open_productions: [],
+        actor_id: actorId,
+        actor_name: actorName
+      };
+
+      const saved =
+        await persistPendingConfirmation(
+          key,
+          nextDraft,
+          actorId,
+          actorName
+        );
+
+      if (!saved.ok) {
+        return {
+          type: 'intake_draft_persistence_failed',
+          message:
+            'Yeni üretim taslağı kaydedilemedi.'
+        };
+      }
+
+      pendingConfirmations.set(
+        key,
+        nextDraft
+      );
+
+      return {
+        type: 'question',
+        question:
+          'Yeni üretim olarak devam ediyoruz. Ürün tipi, üretim tarihi, ürün adı ve batch adedini belirt.'
+      };
+    }
+
+
+    return {
+      type: 'question',
+      question:
+        'Bu dolum bilgisini nereye kaydedeyim?\n' +
+        '1. Açık üretime\n' +
+        '2. Yeni üretim olarak'
+    };
+  }
+
   
   // ----------------------------------------------------------
   // INTERPRET NEW MESSAGE
@@ -2796,9 +3208,64 @@ return {
     );
 
 
-  if (!interpretation?.ready) {
+if (!interpretation?.ready) {
+
+    if (
+      !intakeDraft &&
+      isBatchPackagingCandidate(
+        interpretation
+      )
+    ) {
+
+      const destinationDraft = {
+        ...interpretation,
+        state_kind: 'intake_draft',
+        await_destination: true,
+        await_open_production_choice: false,
+        open_productions: [],
+        actor_id: actorId,
+        actor_name: actorName
+      };
+
+      const draftSaved =
+        await persistPendingConfirmation(
+          key,
+          destinationDraft,
+          actorId,
+          actorName
+        );
+
+      if (!draftSaved.ok) {
+        return {
+          type:
+            'intake_draft_persistence_failed',
+          message:
+            'Dolum taslağı kaydedilemedi.',
+          error:
+            draftSaved.error,
+          bridge_result:
+            draftSaved.bridge_result
+        };
+      }
+
+      pendingConfirmations.set(
+        key,
+        destinationDraft
+      );
+
+      return {
+        type: 'question',
+        question:
+          'Bu dolum bilgisini nereye kaydedeyim?\n' +
+          '1. Açık üretime\n' +
+          '2. Yeni üretim olarak'
+      };
+    }
+
 
     const hasIntakeDraft =
+
+  
   Array.isArray(
     interpretation?.operations
   ) &&
