@@ -1625,212 +1625,68 @@ function isConfirmationNo(text) {
   ].includes(value);
 }
 
-
-async function buildHaccpAssistantContext(
-  text
+async function executeHaccpReadTool(
+  toolName,
+  args = {}
 ) {
 
-  const context = {
+  if (toolName === 'list_sheets') {
 
-    today:
-      getHaccpToday(),
-
-    open_productions:
-      [],
-
-    referenced_batch:
-      null,
-
-    capabilities: {
-
-      reads: [
-        'açık üretimleri görme',
-        'açık üretimin tamamlanan ve eksik proses kayıtlarını görme',
-        'parti numarasıyla mevcut partiyi bulma'
-      ],
-
-      writes: [
-        'yeni üretim açma',
-        'açık üretime dolum/parti bağlama',
-        'yeni bağımsız parti oluşturma',
-        'açık üretime proses tamamlanma kaydı yazma',
-        'partiye proses ölçümü yazma',
-        'partiye pH kaydı yazma'
-      ]
-    }
-  };
-
-
-  // ----------------------------------------------------------
-  // AÇIK ÜRETİMLERİ OKU
-  // ----------------------------------------------------------
-
-  try {
-
-    const openResult =
-      await callHaccpBridge(
-        'get_open_productions',
-        {}
-      );
-
-
-    const productions =
-      Array.isArray(
-        openResult?.productions
-      )
-        ? openResult
-            .productions
-            .slice(
-              0,
-              5
-            )
-        : [];
-
-
-    const enriched =
-      await Promise.all(
-
-        productions.map(
-          async (
-            production
-          ) => {
-
-            try {
-
-              const records =
-                await callHaccpBridge(
-                  'get_missing_production_records',
-                  {
-                    production_id:
-                      production
-                        .production_id
-                  }
-                );
-
-
-              return {
-
-                ...production,
-
-                process_records:
-                  records?.ok
-                    ? {
-
-                        total_processes:
-                          records
-                            .total_processes,
-
-                        completed_count:
-                          records
-                            .completed_count,
-
-                        missing_count:
-                          records
-                            .missing_count,
-
-                        completed:
-                          records
-                            .completed ||
-                          [],
-
-                        missing:
-                          records
-                            .missing ||
-                          []
-                      }
-                    : {
-
-                        error:
-                          records?.error ||
-                          'Proses kayıtları okunamadı.'
-                      }
-              };
-
-            } catch (err) {
-
-              return {
-
-                ...production,
-
-                process_records: {
-
-                  error:
-                    err?.message ||
-                    String(err)
-                }
-              };
-            }
-          }
-        )
-      );
-
-
-    context.open_productions =
-      enriched;
-
-  } catch (err) {
-
-    context.open_productions_error =
-      err?.message ||
-      String(err);
-  }
-
-
-  // ----------------------------------------------------------
-  // MESAJDA PARTİ NUMARASI VARSA PARTİYİ DE OKU
-  // ----------------------------------------------------------
-
-  const batchMatch =
-    String(
-      text || ''
-    ).match(
-      /\bparti(?:\s*(?:no|numarası|numarasi))?\s*[:#-]?\s*(\d+)\b/i
+    return callHaccpBridge(
+      'list_sheets',
+      {}
     );
-
-
-  if (batchMatch) {
-
-    try {
-
-      const batchResult =
-        await callHaccpBridge(
-          'get_batch',
-          {
-            batch_no:
-              batchMatch[1]
-          }
-        );
-
-
-      context.referenced_batch =
-        batchResult?.ok
-          ? batchResult
-          : {
-
-              found:
-                false,
-
-              error:
-                batchResult?.error ||
-                'Parti okunamadı.'
-            };
-
-    } catch (err) {
-
-      context.referenced_batch = {
-
-        found:
-          false,
-
-        error:
-          err?.message ||
-          String(err)
-      };
-    }
   }
 
 
-  return context;
+  if (toolName === 'read_range') {
+
+    return callHaccpBridge(
+      'read_sheet_range',
+      {
+        sheet_name:
+          String(
+            args.sheet_name || ''
+          ).trim(),
+
+        a1_range:
+          String(
+            args.a1_range || ''
+          ).trim()
+      }
+    );
+  }
+
+
+  if (toolName === 'search_workbook') {
+
+    return callHaccpBridge(
+      'search_workbook',
+      {
+        query:
+          String(
+            args.query || ''
+          ).trim(),
+
+        sheet_name:
+          String(
+            args.sheet_name || ''
+          ).trim(),
+
+        max_results:
+          Number(
+            args.max_results || 20
+          )
+      }
+    );
+  }
+
+
+  return {
+    ok: false,
+    error:
+      `Bilinmeyen okuma aracı: ${toolName}`
+  };
 }
 
 
@@ -1848,20 +1704,6 @@ async function runHaccpAssistantTurn(
   }
 
 
-  // ----------------------------------------------------------
-  // CANLI HACCP DURUMUNU TOPLA
-  // ----------------------------------------------------------
-
-  const liveContext =
-    await buildHaccpAssistantContext(
-      text
-    );
-
-
-  // ----------------------------------------------------------
-  // SON KONUŞMALARI AL
-  // ----------------------------------------------------------
-
   const history =
     getHaccpConversationHistory(
       key
@@ -1869,89 +1711,44 @@ async function runHaccpAssistantTurn(
 
 
   // ----------------------------------------------------------
-  // AI ROLÜ
+  // AI'YA ÖNCE SADECE WORKBOOK HARİTASINI VER
+  // İçeriği kendisi gerektiğinde okuyacak.
   // ----------------------------------------------------------
 
-  const systemPrompt = `
-Sen genel amaçlı, güçlü bir yapay zekâ asistanısın ve aynı zamanda Boşnak Tatları HACCP sisteminin içinde çalışıyorsun.
-
-Normal sohbet zekânı kısıtlama.
-
-Kullanıcı HACCP dışı bir şey sorarsa normal bir ChatGPT gibi cevap ver.
-
-HACCP veya üretim sistemiyle ilgili soru sorarsa önce sana verilen CANLI SİSTEM BAĞLAMI'nı incele ve cevabını ona göre ver.
-
-Senin beynin geniştir fakat sisteme müdahale eden ellerin yalnızca aşağıdaki yeteneklerle sınırlıdır.
-
-Bir kullanıcı sistemde değişiklik istiyorsa ve bu değişiklik mevcut yazma yeteneklerinden biriyle yapılabiliyorsa:
-
-mode = "action"
-
-döndür.
-
-Kullanıcı sadece bilgi, açıklama, yorum, analiz, tavsiye, mevcut durum, eksik kayıt veya "ne düşünüyorsun" türü bir şey soruyorsa:
-
-mode = "chat"
-
-döndür.
-
-Kullanıcı sistemde bir değişiklik istiyor fakat mevcut yeteneklerle bunu güvenli biçimde yapamıyorsan:
-
-mode = "unsupported"
-
-döndür.
-
-Bu durumda answer içinde:
-- kullanıcının ne istediğini anladığını,
-- hangi sistem yeteneğinin eksik olduğunu,
-- bunun kod geliştirmesi gerektirdiğini
-
-açıkça söyle.
-
-KURALLAR:
-
-- Bilmediğin canlı Sheet verisini uydurma.
-- CANLI SİSTEM BAĞLAMI yeterliyse gereksiz soru sorma.
-- Tek açık üretim bağlama uyuyorsa onu doğal bağlam kabul edebilirsin.
-- Birden fazla olası üretim varsa ve cevap veya işlem buna göre değişecekse bunu belirt.
-- action modunda işlemi kendin yapma. Mevcut güvenli işlem ve onay sistemi devam edecek.
-- Bekleyen bir onay varsa kullanıcı onun hakkında soru sorabilir. Açıkla; onayı silme veya değiştirme.
-- Kullanıcının kısa cevapları aktif bir giriş taslağını veya seçim akışını tamamlıyorsa mode = "action" kullan.
-- Sistemde mevcut olmayan bir işlem varmış gibi davranma.
-- Kullanıcının sorusunu bir HACCP komutuna zorla dönüştürme.
-- Kullanıcı genel bilgi soruyorsa normal bilgini ve muhakemeni kullan.
-- answer doğal, kısa, doğrudan Türkçe olsun.
-
-SADECE geçerli JSON döndür:
-
-{
-  "mode": "chat | action | unsupported",
-  "answer": "",
-  "action_hint": ""
-}
-`.trim();
+  let workbookDirectory;
 
 
-  // ----------------------------------------------------------
-  // SISTEM DURUMU
-  // ----------------------------------------------------------
+  try {
+
+    workbookDirectory =
+      await executeHaccpReadTool(
+        'list_sheets'
+      );
+
+  } catch (err) {
+
+    workbookDirectory = {
+      ok: false,
+      error:
+        err?.message ||
+        String(err)
+    };
+  }
+
 
   const stateContext = {
+
+    today:
+      getHaccpToday(),
 
     pending_confirmation:
       state.pending
         ? {
-
             summary:
-              state
-                .pending
-                .summary ||
-              '',
+              state.pending.summary || '',
 
             state_kind:
-              state
-                .pending
-                .state_kind ||
+              state.pending.state_kind ||
               'confirmation'
           }
         : null,
@@ -1960,28 +1757,133 @@ SADECE geçerli JSON döndür:
       state.intakeDraft ||
       null,
 
-    live_system:
-      liveContext
+    workbook_directory:
+      workbookDirectory,
+
+    write_capabilities: [
+      'yeni üretim açma',
+      'açık üretime dolum/parti bağlama',
+      'yeni bağımsız parti oluşturma',
+      'açık üretime proses tamamlanma kaydı yazma',
+      'partiye proses ölçümü yazma',
+      'partiye pH kaydı yazma'
+    ]
   };
 
 
-  // ----------------------------------------------------------
-  // OPENAI INPUT
-  // ----------------------------------------------------------
+  const systemPrompt = `
+Sen normal ChatGPT zekâsıyla çalışan genel amaçlı bir yapay zekâ asistanısın.
+Aynı zamanda Boşnak Tatları HACCP çalışma alanının içindesin.
 
-  const input = [
+Zekânı HACCP komut listeleriyle sınırlandırma.
+Normal muhakeme, açıklama, eleştiri, karşılaştırma ve genel sohbet yeteneklerini kullan.
+
+HACCP workbook'una canlı olarak bakabilirsin.
+Workbook yapısını ezberlenmiş kabul etme; gerektiğinde araçları kullanarak kendin incele.
+Kullanıcının sorusu güncel Sheet verisine bağlıysa cevap vermeden önce ilgili veriyi mutlaka oku.
+
+OKUMA ARAÇLARIN:
+
+1. list_sheets
+Workbook'taki sheetleri ve kullanılan boyutlarını gösterir.
+
+2. read_range
+Belirli bir sheet'teki A1 aralığını okur.
+
+arguments:
+{
+  "sheet_name": "",
+  "a1_range": ""
+}
+
+3. search_workbook
+Workbook'un tamamında veya belirtilen sheet'te metin/değer arar.
+
+arguments:
+{
+  "query": "",
+  "sheet_name": "",
+  "max_results": 20
+}
+
+Bir okuma aracını kullanmak istediğinde yalnızca şu JSON'u döndür:
+
+{
+  "mode": "tool",
+  "answer": "",
+  "tool": {
+    "name": "list_sheets | read_range | search_workbook",
+    "arguments": {}
+  }
+}
+
+Araç sonucu sana sonraki turda verilecektir.
+Gerekirse birden fazla tur araç kullanabilirsin.
+
+YAZMA:
+
+Sheet'e doğrudan keyfi hücre yazma yetkin yoktur.
+
+Yalnızca SİSTEM DURUMU içinde belirtilen write_capabilities
+mevcut güvenli yazma motoru tarafından uygulanabilir.
+
+Kullanıcı mevcut bir yazma yeteneğiyle yapılabilecek değişiklik istiyorsa:
+
+{
+  "mode": "action",
+  "answer": "",
+  "action_hint": "kullanıcının ne istediğini kısa ve açık tarif et"
+}
+
+Yazma işlemini kendin yapma.
+Mevcut onay ve doğrulama motoru devralacaktır.
+
+Kullanıcı bir değişiklik istiyor fakat mevcut write_capabilities
+içinde bunu yapabilecek el yoksa:
+
+{
+  "mode": "unsupported",
+  "answer": "İstediğini anladım...",
+  "action_hint": ""
+}
+
+Bu durumda neyin eksik olduğunu somut söyle.
+Yapılmış gibi davranma.
+
+Kullanıcı bilgi, analiz, yorum, karşılaştırma,
+tavsiye veya normal sohbet istiyorsa:
+
+{
+  "mode": "chat",
+  "answer": "doğal cevabın",
+  "action_hint": ""
+}
+
+KURALLAR:
+
+- Sheet verisi gerekiyorsa tahmin etme; oku.
+- Hangi sheet veya range gerektiğine kendin karar ver.
+- Kullanıcı "bu", "burada", "şu üretim" gibi bağlama bağlı ifade kullanırsa konuşma geçmişini ve workbook'u birlikte değerlendir.
+- Birden fazla olası kayıt varsa ve sonuç değişecekse bunu tespit et; gerekirse soru sor.
+- Bekleyen onay varken kullanıcı açıklama sorabilir; onayı bozma.
+- Kullanıcının sorusunu zorla kayıt komutuna dönüştürme.
+- HACCP dışı genel bir soru gelirse normal ChatGPT gibi cevap ver; workbook aracı kullanmak zorunda değilsin.
+- Cevaplar Türkçe, doğal ve doğrudan olsun.
+
+Tool istemediğin son cevapta yalnızca geçerli JSON döndür.
+`.trim();
+
+
+  const transcript = [
 
     {
-      role:
-        'system',
-
+      role: 'system',
       content:
         systemPrompt
     },
 
     ...history.map(
       item => ({
-
         role:
           item.role,
 
@@ -1991,8 +1893,7 @@ SADECE geçerli JSON döndür:
     ),
 
     {
-      role:
-        'user',
+      role: 'user',
 
       content: [
 
@@ -2016,117 +1917,189 @@ SADECE geçerli JSON döndür:
 
 
   // ----------------------------------------------------------
-  // OPENAI
+  // AI KENDİSİ DOSYAYI GEZSİN
+  // Maksimum 4 read turu: latency'nin kontrolden çıkmaması için.
   // ----------------------------------------------------------
 
-  const response =
-    await fetch(
-      'https://api.openai.com/v1/responses',
-      {
+  for (
+    let round = 0;
+    round < 4;
+    round++
+  ) {
 
-        method:
-          'POST',
+    const response =
+      await fetch(
+        'https://api.openai.com/v1/responses',
+        {
+          method: 'POST',
 
-        headers: {
+          headers: {
 
-          Authorization:
-            `Bearer ${OPENAI_API_KEY}`,
+            Authorization:
+              `Bearer ${OPENAI_API_KEY}`,
 
-          'Content-Type':
-            'application/json'
+            'Content-Type':
+              'application/json'
+          },
+
+          body:
+            JSON.stringify({
+
+              model:
+                OPENAI_MODEL,
+
+              input:
+                transcript,
+
+              reasoning: {
+                effort:
+                  'medium'
+              },
+
+              max_output_tokens:
+                1200
+            })
+        }
+      );
+
+
+    const body =
+      await response.json();
+
+
+    if (!response.ok) {
+
+      throw new Error(
+        body?.error?.message ||
+        `OpenAI HTTP ${response.status}`
+      );
+    }
+
+
+    const outputText =
+      extractOpenAIText(
+        body
+      );
+
+
+    if (!outputText) {
+
+      throw new Error(
+        'OpenAI boş asistan cevabı döndürdü'
+      );
+    }
+
+
+    const parsed =
+      parseJsonText(
+        outputText
+      );
+
+
+    // --------------------------------------------------------
+    // AI DOSYAYA BAKMAK İSTİYOR
+    // --------------------------------------------------------
+
+    if (
+      parsed?.mode === 'tool'
+    ) {
+
+      const toolName =
+        String(
+          parsed?.tool?.name || ''
+        ).trim();
+
+
+      const toolArgs =
+        parsed?.tool?.arguments &&
+        typeof parsed.tool.arguments ===
+          'object' &&
+        !Array.isArray(
+          parsed.tool.arguments
+        )
+          ? parsed.tool.arguments
+          : {};
+
+
+      const toolResult =
+        await executeHaccpReadTool(
+          toolName,
+          toolArgs
+        );
+
+
+      transcript.push(
+        {
+          role:
+            'assistant',
+
+          content:
+            outputText
         },
+        {
+          role:
+            'user',
 
-        body:
-          JSON.stringify({
-
-            model:
-              OPENAI_MODEL,
-
-            input,
-
-            reasoning: {
-              effort:
-                'medium'
-            },
-
-            max_output_tokens:
-              900
-          })
-      }
-    );
+          content: [
+            'OKUMA ARACI SONUCU:',
+            `tool=${toolName}`,
+            JSON.stringify(
+              toolResult
+            ),
+            '',
+            'Bu sonucu değerlendir. Gerekirse başka bir okuma aracı kullan; yeterli bilgi varsa kullanıcıya cevap ver veya action/unsupported kararı üret.'
+          ].join('\n')
+        }
+      );
 
 
-  const body =
-    await response.json();
+      continue;
+    }
 
 
-  if (!response.ok) {
+    const allowedModes =
+      new Set([
+        'chat',
+        'action',
+        'unsupported'
+      ]);
 
-    throw new Error(
 
-      body?.error?.message ||
+    const mode =
+      allowedModes.has(
+        parsed?.mode
+      )
+        ? parsed.mode
+        : 'chat';
 
-      `OpenAI HTTP ${response.status}`
-    );
+
+    return {
+
+      mode,
+
+      answer:
+        String(
+          parsed?.answer || ''
+        ).trim(),
+
+      action_hint:
+        String(
+          parsed?.action_hint || ''
+        ).trim()
+    };
   }
-
-
-  const outputText =
-    extractOpenAIText(
-      body
-    );
-
-
-  if (!outputText) {
-
-    throw new Error(
-      'OpenAI boş asistan cevabı döndürdü'
-    );
-  }
-
-
-  const parsed =
-    parseJsonText(
-      outputText
-    );
-
-
-  const allowedModes =
-    new Set([
-      'chat',
-      'action',
-      'unsupported'
-    ]);
-
-
-  const mode =
-    allowedModes.has(
-      parsed?.mode
-    )
-      ? parsed.mode
-      : 'chat';
 
 
   return {
-
-    mode,
+    mode: 'chat',
 
     answer:
-      String(
-        parsed?.answer ||
-        ''
-      ).trim(),
+      'Dosyayı incelerken yeterli sonuca ulaşamadım. Daha dar bir alan belirtirsen tekrar bakabilirim.',
 
-    action_hint:
-      String(
-        parsed?.action_hint ||
-        ''
-      ).trim(),
-
-    live_context:
-      liveContext
+    action_hint: ''
   };
 }
+
 
 
 async function executeHaccpInterpretation(
