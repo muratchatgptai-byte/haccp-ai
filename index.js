@@ -1990,10 +1990,29 @@ Tool istemediğin son cevapta yalnızca geçerli JSON döndür.
     }
 
 
-    const parsed =
-      parseJsonText(
-        outputText
-      );
+    let parsed;
+
+
+    try {
+    
+      parsed =
+        parseJsonText(
+          outputText
+        );
+    
+    } catch {
+    
+      return {
+        mode:
+          'chat',
+    
+        answer:
+          outputText,
+    
+        action_hint:
+          ''
+      };
+    }
 
 
     // --------------------------------------------------------
