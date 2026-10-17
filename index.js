@@ -1198,6 +1198,92 @@ const pendingConfirmations =
 const executingConfirmations =
   new Set();
 
+
+const haccpConversationHistory =
+  new Map();
+
+
+function getHaccpConversationHistory(
+  key
+) {
+
+  const items =
+    haccpConversationHistory.get(
+      String(
+        key || ''
+      )
+    );
+
+
+  return Array.isArray(
+    items
+  )
+    ? items
+    : [];
+}
+
+
+function rememberHaccpConversation(
+  key,
+  userText,
+  assistantText
+) {
+
+  const history =
+    getHaccpConversationHistory(
+      key
+    ).slice();
+
+
+  const user =
+    String(
+      userText || ''
+    ).trim();
+
+
+  const assistant =
+    String(
+      assistantText || ''
+    ).trim();
+
+
+  if (user) {
+
+    history.push({
+      role:
+        'user',
+
+      content:
+        user
+    });
+  }
+
+
+  if (assistant) {
+
+    history.push({
+      role:
+        'assistant',
+
+      content:
+        assistant
+    });
+  }
+
+
+  haccpConversationHistory.set(
+
+    String(
+      key || ''
+    ),
+
+    history.slice(
+      -12
+    )
+  );
+}
+
+
 async function loadPendingConfirmation(
   key
 ) {
@@ -1537,6 +1623,509 @@ function isConfirmationNo(text) {
     'vazgec',
     'no'
   ].includes(value);
+}
+
+
+async function buildHaccpAssistantContext(
+  text
+) {
+
+  const context = {
+
+    today:
+      getHaccpToday(),
+
+    open_productions:
+      [],
+
+    referenced_batch:
+      null,
+
+    capabilities: {
+
+      reads: [
+        'açık üretimleri görme',
+        'açık üretimin tamamlanan ve eksik proses kayıtlarını görme',
+        'parti numarasıyla mevcut partiyi bulma'
+      ],
+
+      writes: [
+        'yeni üretim açma',
+        'açık üretime dolum/parti bağlama',
+        'yeni bağımsız parti oluşturma',
+        'açık üretime proses tamamlanma kaydı yazma',
+        'partiye proses ölçümü yazma',
+        'partiye pH kaydı yazma'
+      ]
+    }
+  };
+
+
+  // ----------------------------------------------------------
+  // AÇIK ÜRETİMLERİ OKU
+  // ----------------------------------------------------------
+
+  try {
+
+    const openResult =
+      await callHaccpBridge(
+        'get_open_productions',
+        {}
+      );
+
+
+    const productions =
+      Array.isArray(
+        openResult?.productions
+      )
+        ? openResult
+            .productions
+            .slice(
+              0,
+              5
+            )
+        : [];
+
+
+    const enriched =
+      await Promise.all(
+
+        productions.map(
+          async (
+            production
+          ) => {
+
+            try {
+
+              const records =
+                await callHaccpBridge(
+                  'get_missing_production_records',
+                  {
+                    production_id:
+                      production
+                        .production_id
+                  }
+                );
+
+
+              return {
+
+                ...production,
+
+                process_records:
+                  records?.ok
+                    ? {
+
+                        total_processes:
+                          records
+                            .total_processes,
+
+                        completed_count:
+                          records
+                            .completed_count,
+
+                        missing_count:
+                          records
+                            .missing_count,
+
+                        completed:
+                          records
+                            .completed ||
+                          [],
+
+                        missing:
+                          records
+                            .missing ||
+                          []
+                      }
+                    : {
+
+                        error:
+                          records?.error ||
+                          'Proses kayıtları okunamadı.'
+                      }
+              };
+
+            } catch (err) {
+
+              return {
+
+                ...production,
+
+                process_records: {
+
+                  error:
+                    err?.message ||
+                    String(err)
+                }
+              };
+            }
+          }
+        )
+      );
+
+
+    context.open_productions =
+      enriched;
+
+  } catch (err) {
+
+    context.open_productions_error =
+      err?.message ||
+      String(err);
+  }
+
+
+  // ----------------------------------------------------------
+  // MESAJDA PARTİ NUMARASI VARSA PARTİYİ DE OKU
+  // ----------------------------------------------------------
+
+  const batchMatch =
+    String(
+      text || ''
+    ).match(
+      /\bparti(?:\s*(?:no|numarası|numarasi))?\s*[:#-]?\s*(\d+)\b/i
+    );
+
+
+  if (batchMatch) {
+
+    try {
+
+      const batchResult =
+        await callHaccpBridge(
+          'get_batch',
+          {
+            batch_no:
+              batchMatch[1]
+          }
+        );
+
+
+      context.referenced_batch =
+        batchResult?.ok
+          ? batchResult
+          : {
+
+              found:
+                false,
+
+              error:
+                batchResult?.error ||
+                'Parti okunamadı.'
+            };
+
+    } catch (err) {
+
+      context.referenced_batch = {
+
+        found:
+          false,
+
+        error:
+          err?.message ||
+          String(err)
+      };
+    }
+  }
+
+
+  return context;
+}
+
+
+async function runHaccpAssistantTurn(
+  key,
+  text,
+  state = {}
+) {
+
+  if (!OPENAI_API_KEY) {
+
+    throw new Error(
+      'OPENAI_API_KEY tanımlı değil'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // CANLI HACCP DURUMUNU TOPLA
+  // ----------------------------------------------------------
+
+  const liveContext =
+    await buildHaccpAssistantContext(
+      text
+    );
+
+
+  // ----------------------------------------------------------
+  // SON KONUŞMALARI AL
+  // ----------------------------------------------------------
+
+  const history =
+    getHaccpConversationHistory(
+      key
+    );
+
+
+  // ----------------------------------------------------------
+  // AI ROLÜ
+  // ----------------------------------------------------------
+
+  const systemPrompt = `
+Sen genel amaçlı, güçlü bir yapay zekâ asistanısın ve aynı zamanda Boşnak Tatları HACCP sisteminin içinde çalışıyorsun.
+
+Normal sohbet zekânı kısıtlama.
+
+Kullanıcı HACCP dışı bir şey sorarsa normal bir ChatGPT gibi cevap ver.
+
+HACCP veya üretim sistemiyle ilgili soru sorarsa önce sana verilen CANLI SİSTEM BAĞLAMI'nı incele ve cevabını ona göre ver.
+
+Senin beynin geniştir fakat sisteme müdahale eden ellerin yalnızca aşağıdaki yeteneklerle sınırlıdır.
+
+Bir kullanıcı sistemde değişiklik istiyorsa ve bu değişiklik mevcut yazma yeteneklerinden biriyle yapılabiliyorsa:
+
+mode = "action"
+
+döndür.
+
+Kullanıcı sadece bilgi, açıklama, yorum, analiz, tavsiye, mevcut durum, eksik kayıt veya "ne düşünüyorsun" türü bir şey soruyorsa:
+
+mode = "chat"
+
+döndür.
+
+Kullanıcı sistemde bir değişiklik istiyor fakat mevcut yeteneklerle bunu güvenli biçimde yapamıyorsan:
+
+mode = "unsupported"
+
+döndür.
+
+Bu durumda answer içinde:
+- kullanıcının ne istediğini anladığını,
+- hangi sistem yeteneğinin eksik olduğunu,
+- bunun kod geliştirmesi gerektirdiğini
+
+açıkça söyle.
+
+KURALLAR:
+
+- Bilmediğin canlı Sheet verisini uydurma.
+- CANLI SİSTEM BAĞLAMI yeterliyse gereksiz soru sorma.
+- Tek açık üretim bağlama uyuyorsa onu doğal bağlam kabul edebilirsin.
+- Birden fazla olası üretim varsa ve cevap veya işlem buna göre değişecekse bunu belirt.
+- action modunda işlemi kendin yapma. Mevcut güvenli işlem ve onay sistemi devam edecek.
+- Bekleyen bir onay varsa kullanıcı onun hakkında soru sorabilir. Açıkla; onayı silme veya değiştirme.
+- Kullanıcının kısa cevapları aktif bir giriş taslağını veya seçim akışını tamamlıyorsa mode = "action" kullan.
+- Sistemde mevcut olmayan bir işlem varmış gibi davranma.
+- Kullanıcının sorusunu bir HACCP komutuna zorla dönüştürme.
+- Kullanıcı genel bilgi soruyorsa normal bilgini ve muhakemeni kullan.
+- answer doğal, kısa, doğrudan Türkçe olsun.
+
+SADECE geçerli JSON döndür:
+
+{
+  "mode": "chat | action | unsupported",
+  "answer": "",
+  "action_hint": ""
+}
+`.trim();
+
+
+  // ----------------------------------------------------------
+  // SISTEM DURUMU
+  // ----------------------------------------------------------
+
+  const stateContext = {
+
+    pending_confirmation:
+      state.pending
+        ? {
+
+            summary:
+              state
+                .pending
+                .summary ||
+              '',
+
+            state_kind:
+              state
+                .pending
+                .state_kind ||
+              'confirmation'
+          }
+        : null,
+
+    intake_draft:
+      state.intakeDraft ||
+      null,
+
+    live_system:
+      liveContext
+  };
+
+
+  // ----------------------------------------------------------
+  // OPENAI INPUT
+  // ----------------------------------------------------------
+
+  const input = [
+
+    {
+      role:
+        'system',
+
+      content:
+        systemPrompt
+    },
+
+    ...history.map(
+      item => ({
+
+        role:
+          item.role,
+
+        content:
+          item.content
+      })
+    ),
+
+    {
+      role:
+        'user',
+
+      content: [
+
+        'SİSTEM DURUMU:',
+
+        JSON.stringify(
+          stateContext
+        ),
+
+        '',
+
+        'KULLANICININ YENİ MESAJI:',
+
+        String(
+          text || ''
+        )
+
+      ].join('\n')
+    }
+  ];
+
+
+  // ----------------------------------------------------------
+  // OPENAI
+  // ----------------------------------------------------------
+
+  const response =
+    await fetch(
+      'https://api.openai.com/v1/responses',
+      {
+
+        method:
+          'POST',
+
+        headers: {
+
+          Authorization:
+            `Bearer ${OPENAI_API_KEY}`,
+
+          'Content-Type':
+            'application/json'
+        },
+
+        body:
+          JSON.stringify({
+
+            model:
+              OPENAI_MODEL,
+
+            input,
+
+            reasoning: {
+              effort:
+                'medium'
+            },
+
+            max_output_tokens:
+              900
+          })
+      }
+    );
+
+
+  const body =
+    await response.json();
+
+
+  if (!response.ok) {
+
+    throw new Error(
+
+      body?.error?.message ||
+
+      `OpenAI HTTP ${response.status}`
+    );
+  }
+
+
+  const outputText =
+    extractOpenAIText(
+      body
+    );
+
+
+  if (!outputText) {
+
+    throw new Error(
+      'OpenAI boş asistan cevabı döndürdü'
+    );
+  }
+
+
+  const parsed =
+    parseJsonText(
+      outputText
+    );
+
+
+  const allowedModes =
+    new Set([
+      'chat',
+      'action',
+      'unsupported'
+    ]);
+
+
+  const mode =
+    allowedModes.has(
+      parsed?.mode
+    )
+      ? parsed.mode
+      : 'chat';
+
+
+  return {
+
+    mode,
+
+    answer:
+      String(
+        parsed?.answer ||
+        ''
+      ).trim(),
+
+    action_hint:
+      String(
+        parsed?.action_hint ||
+        ''
+      ).trim(),
+
+    live_context:
+      liveContext
+  };
 }
 
 
@@ -2502,6 +3091,62 @@ return {
     };
   }
 
+  // ----------------------------------------------------------
+  // GENERAL AI ASSISTANT LAYER
+  // ----------------------------------------------------------
+
+  let assistantDecision =
+    null;
+
+
+  try {
+
+    assistantDecision =
+      await runHaccpAssistantTurn(
+        key,
+        text,
+        {
+          pending,
+          intakeDraft
+        }
+      );
+
+  } catch (err) {
+
+    console.error(
+      JSON.stringify({
+        type:
+          'assistant_turn_failed',
+
+        session_id:
+          key,
+
+        error:
+          err?.message ||
+          String(err)
+      })
+    );
+  }
+
+
+  if (
+    assistantDecision &&
+    assistantDecision.mode !==
+      'action'
+  ) {
+
+    return {
+      type:
+        'assistant_reply',
+
+      message:
+        assistantDecision.answer ||
+        'Bunu değerlendirdim ancak net bir cevap oluşturamadım.',
+
+      assistant_mode:
+        assistantDecision.mode
+    };
+  }
 
   // ----------------------------------------------------------
   // BLOCK NEW COMMAND WHILE CONFIRMATION IS PENDING
@@ -3925,8 +4570,7 @@ const server =
             );
           }
 
-
-          const result =
+const result =
             await processHaccpMessage(
               waId,
               text,
@@ -3940,6 +4584,19 @@ const server =
             );
 
 
+          const reply =
+            formatHaccpReply(
+              result
+            );
+
+
+          rememberHaccpConversation(
+            waId,
+            text,
+            reply
+          );
+
+
           return sendJson(
             res,
             200,
@@ -3949,14 +4606,12 @@ const server =
               wa_id:
                 waId,
 
-              reply:
-                formatHaccpReply(
-                  result
-                ),
+              reply,
 
               result
             }
           );
+        
         }
         
         
