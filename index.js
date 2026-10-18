@@ -2675,10 +2675,11 @@ async function queueOpenProductionBatchConfirmation(
   };
 }
 
-
 async function interpretOpenProductionProcessRecords(
-  text
+  text,
+  history = []
 ) {
+
 
   const lookup =
     await callHaccpBridge(
@@ -2745,45 +2746,65 @@ async function interpretOpenProductionProcessRecords(
       continue;
     }
 
+const completedNames = new Set(
+      (recordsResult.completed || []).map(
+        item => String(item?.process || '').trim()
+      )
+    );
 
-    const processNames =
-      [
-        ...(recordsResult.missing || []),
-        ...(recordsResult.completed || [])
-      ]
-        .map(
-          item =>
-            String(
-              item?.process || ''
-            ).trim()
-        )
-        .filter(
-          Boolean
-        );
+    const processStates = [
+      ...(recordsResult.missing || []),
+      ...(recordsResult.completed || [])
+    ]
+      .map(item => {
 
+        const process =
+          String(item?.process || '').trim();
+
+        const fallbackIndex =
+          process.match(/^(\d+)/);
+
+        return {
+          process_index: Number(
+            item?.process_index ||
+            fallbackIndex?.[1] ||
+            0
+          ),
+          process,
+          time:
+            String(item?.time || '').trim(),
+          result:
+            String(item?.result || '').trim(),
+          completed:
+            completedNames.has(process)
+        };
+      })
+      .filter(
+        item => Boolean(item.process)
+      )
+      .sort(
+        (a, b) =>
+          a.process_index -
+          b.process_index
+      );
 
     candidates.push({
       production_id:
         production.production_id,
-
       product_type:
         production.product_type,
-
       product_name:
         production.product_name,
-
       production_date:
         production.production_date,
-
       batch_count:
         production.batch_count,
-
       start_time:
         production.start_time,
-
       processes:
-        processNames
+        processStates
     });
+    
   }
 
 
@@ -2807,7 +2828,11 @@ Sana açık üretimler ve HER ÜRETİMİN GERÇEK PROSES İSİMLERİ verilecekti
 ÖNEMLİ:
 
 - Proses isimlerini kendin uydurma.
-- Sadece verilen processes listesindeki gerçek proses isimlerinden birini kullan.
+- processes artık process_index, process, time, result ve completed alanlarını içerir.
+- Sadece verilen processes listesindeki gerçek proseslerden birini kullan.
+- completed=true olan prosese yeni kayıt hazırlama.
+- Kullanıcı "4-10:30 uygun" gibi numarayla yazarsa process_index=4 olan gerçek prosesi kullan.
+- Kullanıcı bir önceki konuşmada belirli bir üretimin aşamalarını listelediyse kısa numaralı cevaplarını o konuşma bağlamıyla birlikte değerlendir.
 - Ürünlere ait proses sayıları farklı olabilir.
 - Kodlanmış sabit proses listesi yoktur.
 - Kullanıcı proses adını kısaltabilir veya günlük dille söyleyebilir.
@@ -2888,13 +2913,20 @@ Proses belli fakat saat eksikse veya üretim belirsizse:
                 role:
                   'user',
 
-                content: [
-                  'AÇIK ÜRETİMLER VE GERÇEK PROSESLER:',
+                'AÇIK ÜRETİMLER VE GERÇEK PROSESLER:',
                   JSON.stringify(
                     candidates
                   ),
                   '',
+                  'YAKIN KONUŞMA GEÇMİŞİ:',
+                  JSON.stringify(
+                    Array.isArray(history)
+                      ? history.slice(-6)
+                      : []
+                  ),
+                  '',
                   'KULLANICI MESAJI:',
+                
                   String(
                     text || ''
                   )
@@ -3020,8 +3052,9 @@ Proses belli fakat saat eksikse veya üretim belirsizse:
 
     const exactProcess =
       production.processes.find(
-        process =>
-          process ===
+        item =>
+          item.completed !== true &&
+          item.process ===
           String(
             requested.process || ''
           ).trim()
@@ -3057,7 +3090,7 @@ Proses belli fakat saat eksikse veya üretim belirsizse:
           true,
 
         question:
-          `${exactProcess} işleminin tamamlandığı saati belirt.`,
+         `${exactProcess.process} işleminin tamamlandığı saati belirt.`,
 
         records:
           []
@@ -3103,7 +3136,7 @@ Proses belli fakat saat eksikse veya üretim belirsizse:
         production.product_name,
 
       process:
-        exactProcess,
+        exactProcess.process,
 
       time:
         `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
@@ -3550,6 +3583,151 @@ return {
     };
   }
 
+
+  // ----------------------------------------------------------
+  // PRODUCTION PROCESS LIST
+  // ----------------------------------------------------------
+
+  const processListCommand =
+    normalizeCommandText(text);
+
+  const wantsProcessList =
+    /(?:üretim|uretim).*?(?:aşama|asama).*?(?:ver|listele|göster|goster)/i
+      .test(processListCommand) ||
+    /(?:proses|işlem|islem).*?(?:ver|listele|göster|goster)/i
+      .test(processListCommand);
+
+  if (!pending && wantsProcessList) {
+
+    let productType = '';
+
+    if (/ekşi|eksi|pavlaka/i.test(processListCommand)) {
+      productType = 'sour_cream';
+    } else if (/peynir|stp/i.test(processListCommand)) {
+      productType = 'stp';
+    } else if (/tatlı|tatli/i.test(processListCommand)) {
+      productType = 'dessert';
+    }
+
+    const lookup =
+      await callHaccpBridge(
+        'get_open_productions',
+        { product_type: productType }
+      );
+
+    if (!lookup?.ok) {
+      return {
+        type: 'lookup_failed',
+        message:
+          lookup?.error ||
+          'Açık üretimler sorgulanamadı.'
+      };
+    }
+
+    const productions =
+      Array.isArray(lookup.productions)
+        ? lookup.productions
+        : [];
+
+    if (!productions.length) {
+      return {
+        type: 'lookup_result',
+        message:
+          'Uygun açık üretim bulunamadı.'
+      };
+    }
+
+    if (productions.length > 1) {
+
+      const options =
+        productions.map(
+          (production, index) =>
+            (index + 1) + '. ' +
+            production.product_name + ' | ' +
+            production.production_date + ' | ' +
+            production.batch_count + ' batch | ' +
+            production.start_time
+        );
+
+      return {
+        type: 'multiple_open_productions',
+        message:
+          'Birden fazla açık üretim var:\n' +
+          options.join('\n') +
+          '\nHangi üretimin aşamalarını istediğini belirt.'
+      };
+    }
+
+    const production =
+      productions[0];
+
+    const result =
+      await callHaccpBridge(
+        'get_missing_production_records',
+        {
+          production_id:
+            production.production_id
+        }
+      );
+
+    if (!result?.ok) {
+      return {
+        type: 'lookup_failed',
+        message:
+          result?.error ||
+          'Üretim aşamaları okunamadı.'
+      };
+    }
+
+    const records = [
+      ...(result.missing || []),
+      ...(result.completed || [])
+    ].sort(
+      (a, b) =>
+        Number(
+          a?.process_index ||
+          String(a?.process || '')
+            .match(/^(\d+)/)?.[1] ||
+          0
+        ) -
+        Number(
+          b?.process_index ||
+          String(b?.process || '')
+            .match(/^(\d+)/)?.[1] ||
+          0
+        )
+    );
+
+    const lines =
+      records.map(item => {
+
+        const time =
+          String(item?.time || '').trim();
+
+        const processResult =
+          String(item?.result || '').trim();
+
+        return (
+          item.process +
+          ' — Saat: ' +
+          (time || 'BOŞ') +
+          ' | Sonuç: ' +
+          (processResult || 'BOŞ')
+        );
+      });
+
+    return {
+      type: 'lookup_result',
+      message:
+        production.production_date + ' ' +
+        production.product_name + '\n' +
+        lines.join('\n') +
+        '\n\nBoş olanlara örnek:\n' +
+        '4-10:30 uygun\n' +
+        '5-11:00 uygun'
+    };
+  }
+  
   // ----------------------------------------------------------
   // GENERAL AI ASSISTANT LAYER
   // ----------------------------------------------------------
@@ -3835,9 +4013,10 @@ if (
 
   try {
 
-    processDecision =
+     processDecision =
       await interpretOpenProductionProcessRecords(
-        text
+        text,
+        getHaccpConversationHistory(key)
       );
 
   } catch (err) {
