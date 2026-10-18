@@ -2208,12 +2208,20 @@ if (intent === 'start_production') {
         measurement:
           data.measurement,
 
+        measurement_provided:
+          data.measurement_provided === true,
+
         time:
           data.time,
 
+        time_provided:
+          data.time_provided === true,
+
         result:
-        data.result ||
-        'Uygun'
+          data.result,
+
+        result_provided:
+          data.result_provided === true
         
       }
     );
@@ -2770,7 +2778,9 @@ const completedNames = new Set(
             fallbackIndex?.[1] ||
             0
           ),
-          process,
+         process,
+          measurement:
+            String(item?.measurement || '').trim(),
           time:
             String(item?.time || '').trim(),
           result:
@@ -2828,9 +2838,9 @@ Sana açık üretimler ve HER ÜRETİMİN GERÇEK PROSES İSİMLERİ verilecekti
 ÖNEMLİ:
 
 - Proses isimlerini kendin uydurma.
-- processes artık process_index, process, time, result ve completed alanlarını içerir.
+- processes alanları: process_index, process, measurement, time, result, completed.
 - Sadece verilen processes listesindeki gerçek proseslerden birini kullan.
-- completed=true olan prosese yeni kayıt hazırlama.
+- completed=true olan proses de güncellenebilir; kullanıcı mevcut kaydı düzeltiyor olabilir.
 - Kullanıcı "4-10:30 uygun" gibi numarayla yazarsa process_index=4 olan gerçek prosesi kullan.
 - Kullanıcı bir önceki konuşmada belirli bir üretimin aşamalarını listelediyse kısa numaralı cevaplarını o konuşma bağlamıyla birlikte değerlendir.
 - Ürünlere ait proses sayıları farklı olabilir.
@@ -2838,15 +2848,15 @@ Sana açık üretimler ve HER ÜRETİMİN GERÇEK PROSES İSİMLERİ verilecekti
 - Kullanıcı proses adını kısaltabilir veya günlük dille söyleyebilir.
 - Anlam olarak en uygun GERÇEK proses adına eşleştir.
 - Bir mesajda birden fazla proses olabilir.
-- Her proses için tamamlanma saati gereklidir.
-- Saat HH:MM formatında döndürülmelidir.
-- "9.20" = "09:20".
-- Ölçüm değeri arama veya isteme.
-- Şimdilik her tamamlanmış prosesin sonucu "Uygun" kabul edilir.
-- Kullanıcı yeni üretim başlatıyorsa bunu proses tamamlama kaydı sayma.
+- measurement_provided, time_provided ve result_provided alanlarını SADECE kullanıcı o alanı bu mesajda açıkça verdiyse true yap.
+- Kullanıcının vermediği mevcut değerleri JSON'a kopyalama; ilgili *_provided alanını false yap ve değeri boş string döndür.
+- "tamam" veya "tamamlandı" ifadesi result_provided=true ve result="Uygun" sayılabilir.
+- Saat verilmişse time_provided=true yap ve HH:MM formatında döndür. "9.20" = "09:20".
+- Ölçüm verilmişse measurement_provided=true yap ve kullanıcının verdiği ölçüm metnini döndür.
+- Bir kayıtta measurement_provided, time_provided veya result_provided alanlarından en az biri true olmalıdır.
+- Kullanıcı yeni üretim başlatıyorsa bunu proses kaydı sayma.
 - Kullanıcı gramaj/adet/parti/dolum miktarıyla yeni mamul partisi bildiriyorsa bunu bu işlem olarak değerlendirme.
 - Birden fazla açık üretim varsa ve kullanıcının hangisini kastettiği güvenli biçimde anlaşılamıyorsa tahmin etme.
-- Saat eksikse kayda hazır kabul etme.
 
 SADECE JSON DÖNDÜR:
 
@@ -2858,12 +2868,17 @@ SADECE JSON DÖNDÜR:
       "production_id": "",
       "product_name": "",
       "process": "",
-      "time": "HH:MM"
+      "measurement": "",
+      "measurement_provided": false,
+      "time": "",
+      "time_provided": false,
+      "result": "",
+      "result_provided": false
     }
   ]
 }
 
-Proses tamamlama mesajı değilse:
+Proses kaydı veya güncellemesi değilse:
 
 {
   "matched": false,
@@ -2871,7 +2886,7 @@ Proses tamamlama mesajı değilse:
   "records": []
 }
 
-Proses belli fakat saat eksikse veya üretim belirsizse:
+Üretim veya proses belirsizse:
 
 {
   "matched": true,
@@ -3055,80 +3070,124 @@ Proses belli fakat saat eksikse veya üretim belirsizse:
     const exactProcess =
       production.processes.find(
         item =>
-          item.completed !== true &&
           item.process ===
           String(
             requested.process || ''
           ).trim()
       );
 
-
     if (!exactProcess) {
       continue;
     }
 
+    const measurementProvided =
+      requested.measurement_provided === true;
 
-    const rawTime =
-      String(
-        requested.time || ''
-      )
-        .trim()
-        .replace(
-          '.',
-          ':'
-        );
+    const timeProvided =
+      requested.time_provided === true;
 
-
-    const match =
-      rawTime.match(
-        /^(\d{1,2}):(\d{2})$/
-      );
-
-
-    if (!match) {
-
-      return {
-        matched:
-          true,
-
-        question:
-         `${exactProcess.process} işleminin tamamlandığı saati belirt.`,
-
-        records:
-          []
-      };
-    }
-
-
-    const hour =
-      Number(
-        match[1]
-      );
-
-
-    const minute =
-      Number(
-        match[2]
-      );
-
+    const resultProvided =
+      requested.result_provided === true;
 
     if (
-      hour > 23 ||
-      minute > 59
+      !measurementProvided &&
+      !timeProvided &&
+      !resultProvided
     ) {
+      continue;
+    }
 
+    const measurement =
+      measurementProvided
+        ? String(
+            requested.measurement || ''
+          ).trim()
+        : '';
+
+    const result =
+      resultProvided
+        ? String(
+            requested.result || ''
+          ).trim()
+        : '';
+
+    if (
+      measurementProvided &&
+      !measurement
+    ) {
       return {
-        matched:
-          true,
-
+        matched: true,
         question:
-          'Geçerli bir saat belirt.',
-
-        records:
-          []
+          `${exactProcess.process} için ölçüm değerini belirt.`,
+        records: []
       };
     }
 
+    if (
+      resultProvided &&
+      !result
+    ) {
+      return {
+        matched: true,
+        question:
+          `${exactProcess.process} için sonucu belirt.`,
+        records: []
+      };
+    }
+
+    let normalizedTime = '';
+
+    if (timeProvided) {
+
+      const rawTime =
+        String(
+          requested.time || ''
+        )
+          .trim()
+          .replace(
+            '.',
+            ':'
+          );
+
+      const match =
+        rawTime.match(
+          /^(\d{1,2}):(\d{2})$/
+        );
+
+      if (!match) {
+        return {
+          matched: true,
+          question:
+            `${exactProcess.process} için geçerli bir saat belirt.`,
+          records: []
+        };
+      }
+
+      const hour =
+        Number(
+          match[1]
+        );
+
+      const minute =
+        Number(
+          match[2]
+        );
+
+      if (
+        hour > 23 ||
+        minute > 59
+      ) {
+        return {
+          matched: true,
+          question:
+            'Geçerli bir saat belirt.',
+          records: []
+        };
+      }
+
+      normalizedTime =
+        `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    }
 
     validated.push({
       production_id:
@@ -3140,8 +3199,27 @@ Proses belli fakat saat eksikse veya üretim belirsizse:
       process:
         exactProcess.process,
 
+      current_measurement:
+        exactProcess.measurement || '',
+
+      current_time:
+        exactProcess.time || '',
+
+      current_result:
+        exactProcess.result || '',
+
+      measurement,
+      measurement_provided:
+        measurementProvided,
+
       time:
-        `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+        normalizedTime,
+      time_provided:
+        timeProvided,
+
+      result,
+      result_provided:
+        resultProvided
     });
   }
 
@@ -4083,8 +4161,84 @@ if (
       records.map(
         record => {
 
+          const changes = [];
+
+          const normalizeTime =
+            value => {
+
+              const match =
+                String(
+                  value || ''
+                )
+                  .trim()
+                  .replace(
+                    '.',
+                    ':'
+                  )
+                  .match(
+                    /^(\d{1,2}):(\d{2})$/
+                  );
+
+              if (!match) {
+                return String(
+                  value || ''
+                ).trim();
+              }
+
+              return (
+                String(
+                  Number(
+                    match[1]
+                  )
+                ).padStart(
+                  2,
+                  '0'
+                ) +
+                ':' +
+                match[2]
+              );
+            };
+
+          if (record.measurement_provided) {
+            changes.push(
+              record.current_measurement &&
+              record.current_measurement !== record.measurement
+                ? `Ölçüm: ${record.current_measurement} → ${record.measurement}`
+                : `Ölçüm: ${record.measurement}`
+            );
+          }
+
+          if (record.time_provided) {
+
+            const oldTime =
+              normalizeTime(
+                record.current_time
+              );
+
+            const newTime =
+              normalizeTime(
+                record.time
+              );
+
+            changes.push(
+              oldTime &&
+              oldTime !== newTime
+                ? `Saat: ${oldTime} → ${newTime}`
+                : `Saat: ${newTime}`
+            );
+          }
+
+          if (record.result_provided) {
+            changes.push(
+              record.current_result &&
+              record.current_result !== record.result
+                ? `Sonuç: ${record.current_result} → ${record.result}`
+                : `Sonuç: ${record.result}`
+            );
+          }
+
           const summary =
-            `${record.product_name}: ${record.process} — ${record.time} — Uygun`;
+            `${record.product_name}: ${record.process} — ${changes.join(' | ')}`;
 
           summaries.push(
             summary
@@ -4116,16 +4270,23 @@ if (
               process:
                 record.process,
 
-              // Ölçüm altyapısı açık kalıyor,
-              // fakat bu aşamada kullanılmıyor.
               measurement:
-                '',
+                record.measurement,
+
+              measurement_provided:
+                record.measurement_provided,
 
               time:
                 record.time,
 
+              time_provided:
+                record.time_provided,
+
               result:
-                'Uygun'
+                record.result,
+
+              result_provided:
+                record.result_provided
             }
           };
         }
