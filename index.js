@@ -2209,7 +2209,12 @@ if (intent === 'start_production') {
           data.measurement,
 
         time:
-          data.time
+          data.time,
+
+        result:
+        data.result ||
+        'Uygun'
+        
       }
     );
   }
@@ -2670,6 +2675,468 @@ async function queueOpenProductionBatchConfirmation(
   };
 }
 
+
+async function interpretOpenProductionProcessRecords(
+  text
+) {
+
+  const lookup =
+    await callHaccpBridge(
+      'get_open_productions',
+      {}
+    );
+
+
+  if (!lookup?.ok) {
+
+    return {
+      matched:
+        false
+    };
+  }
+
+
+  const productions =
+    Array.isArray(
+      lookup.productions
+    )
+      ? lookup.productions
+      : [];
+
+
+  if (!productions.length) {
+
+    return {
+      matched:
+        false
+    };
+  }
+
+
+  const candidates = [];
+
+
+  for (
+    const production
+    of productions
+  ) {
+
+    let recordsResult;
+
+
+    try {
+
+      recordsResult =
+        await callHaccpBridge(
+          'get_missing_production_records',
+          {
+            production_id:
+              production.production_id
+          }
+        );
+
+    } catch {
+
+      continue;
+    }
+
+
+    if (!recordsResult?.ok) {
+      continue;
+    }
+
+
+    const processNames =
+      [
+        ...(recordsResult.missing || []),
+        ...(recordsResult.completed || [])
+      ]
+        .map(
+          item =>
+            String(
+              item?.process || ''
+            ).trim()
+        )
+        .filter(
+          Boolean
+        );
+
+
+    candidates.push({
+      production_id:
+        production.production_id,
+
+      product_type:
+        production.product_type,
+
+      product_name:
+        production.product_name,
+
+      production_date:
+        production.production_date,
+
+      batch_count:
+        production.batch_count,
+
+      start_time:
+        production.start_time,
+
+      processes:
+        processNames
+    });
+  }
+
+
+  if (!candidates.length) {
+
+    return {
+      matched:
+        false
+    };
+  }
+
+
+  const systemPrompt = `
+Sen Boşnak Tatları açık üretim proses kayıt eşleştiricisisin.
+
+Görevin kullanıcının mesajının açık bir üretimdeki
+bir veya daha fazla prosesin TAMAMLANDIĞINI bildirip bildirmediğini anlamaktır.
+
+Sana açık üretimler ve HER ÜRETİMİN GERÇEK PROSES İSİMLERİ verilecektir.
+
+ÖNEMLİ:
+
+- Proses isimlerini kendin uydurma.
+- Sadece verilen processes listesindeki gerçek proses isimlerinden birini kullan.
+- Ürünlere ait proses sayıları farklı olabilir.
+- Kodlanmış sabit proses listesi yoktur.
+- Kullanıcı proses adını kısaltabilir veya günlük dille söyleyebilir.
+- Anlam olarak en uygun GERÇEK proses adına eşleştir.
+- Bir mesajda birden fazla proses olabilir.
+- Her proses için tamamlanma saati gereklidir.
+- Saat HH:MM formatında döndürülmelidir.
+- "9.20" = "09:20".
+- Ölçüm değeri arama veya isteme.
+- Şimdilik her tamamlanmış prosesin sonucu "Uygun" kabul edilir.
+- Kullanıcı yeni üretim başlatıyorsa bunu proses tamamlama kaydı sayma.
+- Kullanıcı gramaj/adet/parti/dolum miktarıyla yeni mamul partisi bildiriyorsa bunu bu işlem olarak değerlendirme.
+- Birden fazla açık üretim varsa ve kullanıcının hangisini kastettiği güvenli biçimde anlaşılamıyorsa tahmin etme.
+- Saat eksikse kayda hazır kabul etme.
+
+SADECE JSON DÖNDÜR:
+
+{
+  "matched": true,
+  "question": "",
+  "records": [
+    {
+      "production_id": "",
+      "product_name": "",
+      "process": "",
+      "time": "HH:MM"
+    }
+  ]
+}
+
+Proses tamamlama mesajı değilse:
+
+{
+  "matched": false,
+  "question": "",
+  "records": []
+}
+
+Proses belli fakat saat eksikse veya üretim belirsizse:
+
+{
+  "matched": true,
+  "question": "kullanıcıya sorulacak kısa soru",
+  "records": []
+}
+`.trim();
+
+
+  const response =
+    await fetch(
+      'https://api.openai.com/v1/responses',
+      {
+        method:
+          'POST',
+
+        headers: {
+          Authorization:
+            `Bearer ${OPENAI_API_KEY}`,
+
+          'Content-Type':
+            'application/json'
+        },
+
+        body:
+          JSON.stringify({
+            model:
+              OPENAI_MODEL,
+
+            input: [
+              {
+                role:
+                  'system',
+
+                content:
+                  systemPrompt
+              },
+              {
+                role:
+                  'user',
+
+                content: [
+                  'AÇIK ÜRETİMLER VE GERÇEK PROSESLER:',
+                  JSON.stringify(
+                    candidates
+                  ),
+                  '',
+                  'KULLANICI MESAJI:',
+                  String(
+                    text || ''
+                  )
+                ].join('\n')
+              }
+            ],
+
+            reasoning: {
+              effort:
+                'medium'
+            },
+
+            max_output_tokens:
+              700
+          })
+      }
+    );
+
+
+  const body =
+    await response.json();
+
+
+  if (!response.ok) {
+
+    throw new Error(
+      body?.error?.message ||
+      `OpenAI HTTP ${response.status}`
+    );
+  }
+
+
+  const outputText =
+    extractOpenAIText(
+      body
+    );
+
+
+  if (!outputText) {
+
+    return {
+      matched:
+        false
+    };
+  }
+
+
+  let parsed;
+
+
+  try {
+
+    parsed =
+      parseJsonText(
+        outputText
+      );
+
+  } catch {
+
+    return {
+      matched:
+        false
+    };
+  }
+
+
+  if (!parsed?.matched) {
+
+    return {
+      matched:
+        false
+    };
+  }
+
+
+  if (
+    parsed.question
+  ) {
+
+    return {
+      matched:
+        true,
+
+      question:
+        String(
+          parsed.question
+        ).trim(),
+
+      records:
+        []
+    };
+  }
+
+
+  const requestedRecords =
+    Array.isArray(
+      parsed.records
+    )
+      ? parsed.records
+      : [];
+
+
+  const validated = [];
+
+
+  for (
+    const requested
+    of requestedRecords
+  ) {
+
+    const production =
+      candidates.find(
+        item =>
+          item.production_id ===
+          requested.production_id
+      );
+
+
+    if (!production) {
+      continue;
+    }
+
+
+    const exactProcess =
+      production.processes.find(
+        process =>
+          process ===
+          String(
+            requested.process || ''
+          ).trim()
+      );
+
+
+    if (!exactProcess) {
+      continue;
+    }
+
+
+    const rawTime =
+      String(
+        requested.time || ''
+      )
+        .trim()
+        .replace(
+          '.',
+          ':'
+        );
+
+
+    const match =
+      rawTime.match(
+        /^(\d{1,2}):(\d{2})$/
+      );
+
+
+    if (!match) {
+
+      return {
+        matched:
+          true,
+
+        question:
+          `${exactProcess} işleminin tamamlandığı saati belirt.`,
+
+        records:
+          []
+      };
+    }
+
+
+    const hour =
+      Number(
+        match[1]
+      );
+
+
+    const minute =
+      Number(
+        match[2]
+      );
+
+
+    if (
+      hour > 23 ||
+      minute > 59
+    ) {
+
+      return {
+        matched:
+          true,
+
+        question:
+          'Geçerli bir saat belirt.',
+
+        records:
+          []
+      };
+    }
+
+
+    validated.push({
+      production_id:
+        production.production_id,
+
+      product_name:
+        production.product_name,
+
+      process:
+        exactProcess,
+
+      time:
+        `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+    });
+  }
+
+
+  if (!validated.length) {
+
+    return {
+      matched:
+        true,
+
+      question:
+        'Hangi üretim aşamasının tamamlandığını ve saatini belirt.',
+
+      records:
+        []
+    };
+  }
+
+
+  return {
+    matched:
+      true,
+
+    question:
+      '',
+
+    records:
+      validated
+  };
+}
 
 async function processHaccpMessage(
   sessionId,
@@ -3354,239 +3821,201 @@ return {
   }
   
 // ==========================================================
-  // 6.5.5 - PRODUCTION PROCESS RECORDS
-  // ==========================================================
+// DYNAMIC OPEN PRODUCTION PROCESS RECORDS
+// ==========================================================
 
-  const processCommand =
-    normalizeCommandText(text);
+if (
+  assistantDecision?.mode === 'action' &&
+  !intakeDraft
+) {
 
-  const productMatch = processCommand.match(
-    /\b(ekşi|eksi|pavlaka|peynir|stp|tatlı)\b/i
-  );
+  let processDecision =
+    null;
 
-  if (productMatch && !intakeDraft) {
 
-    const productWord =
-      productMatch[1].toLowerCase();
+  try {
 
-    const productType =
-      /ekşi|eksi|pavlaka/.test(productWord)
-        ? 'sour_cream'
-        : /peynir|stp/.test(productWord)
-          ? 'stp'
-          : 'dessert';
-
-    const productNames = {
-      sour_cream: 'Ekşi Krema',
-      stp: 'Taze Peynir',
-      dessert: 'Sütlü Tatlı'
-    };
-
-   const processDefinitions = [
-      {
-        pattern: /son\s*(?:ısı|isi|ısıl\s*işlem)/i,
-        name: 'Son ısıl işlem'
-      },
-      {
-        pattern: /kültür\s*ekleme\s*sıcaklığı|kultur\s*ekleme\s*sicakligi/i,
-        name: 'Kültür ekleme sıcaklığına soğutma'
-      },
-      {
-        pattern: /fermantasyon\s*kabinine\s*(?:alma|alındı|alindi|kondu)/i,
-        name: 'Fermantasyon kabinine alma'
-      },
-      {
-        pattern: /homojenizasyon|homojenizerden\s*geçti/i,
-        name: 'Homojenizasyon ve aynı kazana dönüş'
-      },
-      {
-        pattern: /kültür\s*eklendi|kultur\s*eklendi/i,
-        name: 'Kültür ekleme'
-      },
-      {
-        pattern: /dolum\s*(?:başladı|bitti|tamamlandı)|ambalajlara\s*dolum/i,
-        name: 'Son ambalajlara dolum'
-      },
-      {
-        pattern: /kapak(?:lar)?\s*(?:kapatıldı|kapandi|kapandı)/i,
-        name: 'Kapak kapatma'
-      },
-      {
-        pattern: /tartım\s*(?:bitti|tamamlandı)|kazana\s*alma/i,
-        name: 'Tartım ve kazana alma'
-      },
-      {
-        pattern: /(?:ilk\s*)?(?:ısıtma|isitma|pişirme|pisirme)\s*(?:bitti|tamamlandı)/i,
-        name: 'İlk ısıtma/pişirme'
-      }
-    ];
-
-    const definition =
-      processDefinitions.find(
-        item => item.pattern.test(processCommand)
+    processDecision =
+      await interpretOpenProductionProcessRecords(
+        text
       );
 
-    // pH kayıtları ayrı ve geçmiş korumalı
-    // fonksiyon üzerinden yönetilecek.
-    const isPhMessage =
-      /\bp\s*h\b/i.test(processCommand);
+  } catch (err) {
 
-    if (definition && !isPhMessage) {
+    console.error(
+      JSON.stringify({
+        type:
+          'process_record_interpretation_failed',
 
-      const timeMatch =
-        processCommand.match(
-          /\b(\d{1,2})[:.](\d{2})\b/
-        );
-
-      const measurementTime =
-        timeMatch
-          ? `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`
-          : '';
-
-     const measurement = '';
-
-      if (!measurementTime) {
-
-        return {
-          type: 'question',
-          question:
-            'İşlemin tamamlandığı saati belirt. ' +
-            'Örnek: HACCP ekşi homojenizasyon bitti 11:15'
-        };
-      }
-
-      const hours =
-        Number(measurementTime.split(':')[0]);
-
-      const minutes =
-        Number(measurementTime.split(':')[1]);
-
-      if (
-        hours > 23 ||
-        minutes > 59
-      ) {
-
-        return {
-          type: 'question',
-          question:
-            'Geçerli bir saat belirt. Örnek: 11:35'
-        };
-      }
-
-      const lookup =
-        await callHaccpBridge(
-          'get_open_productions',
-          {
-            product_type: productType
-          }
-        );
-
-      if (!lookup?.ok) {
-
-        return {
-          type: 'lookup_failed',
-          message:
-            'Açık üretimler sorgulanamadı.'
-        };
-      }
-
-      const productions =
-        lookup.productions || [];
-
-      if (!productions.length) {
-
-        return {
-          type: 'no_open_production',
-          message:
-            `Açık ${productNames[productType]} üretimi bulunamadı.`
-        };
-      }
-
-      if (productions.length > 1) {
-
-        const options =
-          productions.map(
-            (production, index) =>
-              `${index + 1}. ${production.production_date} - ${production.batch_count} batch - ${production.start_time}`
-          );
-
-        return {
-          type: 'multiple_open_productions',
-          message:
-            'Birden fazla açık üretim var:\n' +
-            options.join('\n') +
-            '\nİlgili üretimi belirt. Kayıt yapılmadı.'
-        };
-      }
-
-      const production = productions[0];
-
-
-        const summary =
-        `${production.production_date} ${production.product_name}: ` +
-        `${definition.name} tamamlanma saati ${measurementTime} kaydedilecek.`;
-      
-
-      const pendingOperation = {
-        intent:
-          'record_open_production_measurement',
-
-        requires_confirmation: true,
-        summary,
-        operation_id: randomUUID(),
-        actor_id: actorId,
-        actor_name: actorName,
-
-        data: {
-          production_id:
-            production.production_id,
-
-          process:
-            definition.name,
-
-          measurement,
-          time: measurementTime
-        }
-      };
-
-      const pendingInterpretation = {
-        state_kind: 'confirmation',
-        ready: true,
-        requires_confirmation: true,
-        summary,
-        operations: [pendingOperation],
-        actor_id: actorId,
-        actor_name: actorName
-      };
-
-      const saved =
-        await persistPendingConfirmation(
+        session_id:
           key,
-          pendingInterpretation,
-          actorId,
-          actorName
-        );
 
-      if (!saved.ok) {
+        error:
+          err?.message ||
+          String(err)
+      })
+    );
+  }
 
-        return {
-          type: 'pending_persistence_failed',
-          message:
-            'Ölçüm onayı kaydedilemedi. İşlem yapılmadı.'
-        };
-      }
 
-      pendingConfirmations.set(
-        key,
-        pendingInterpretation
-      );
+  if (
+    processDecision?.matched
+  ) {
+
+    if (
+      processDecision.question
+    ) {
 
       return {
-        type: 'confirmation_required',
-        message: summary + ' Onaylıyor musun?'
+        type:
+          'question',
+
+        question:
+          processDecision.question
       };
     }
+
+
+    const records =
+      Array.isArray(
+        processDecision.records
+      )
+        ? processDecision.records
+        : [];
+
+
+    if (!records.length) {
+
+      return {
+        type:
+          'question',
+
+        question:
+          'Hangi üretim aşamasının tamamlandığını ve saatini belirt.'
+      };
+    }
+
+
+    const summaries = [];
+
+    const operations =
+      records.map(
+        record => {
+
+          const summary =
+            `${record.product_name}: ${record.process} — ${record.time} — Uygun`;
+
+          summaries.push(
+            summary
+          );
+
+
+          return {
+            intent:
+              'record_open_production_measurement',
+
+            requires_confirmation:
+              true,
+
+            summary,
+
+            operation_id:
+              randomUUID(),
+
+            actor_id:
+              actorId,
+
+            actor_name:
+              actorName,
+
+            data: {
+              production_id:
+                record.production_id,
+
+              process:
+                record.process,
+
+              // Ölçüm altyapısı açık kalıyor,
+              // fakat bu aşamada kullanılmıyor.
+              measurement:
+                '',
+
+              time:
+                record.time,
+
+              result:
+                'Uygun'
+            }
+          };
+        }
+      );
+
+
+    const summary =
+      summaries.join(
+        '\n'
+      );
+
+
+    const pendingInterpretation = {
+      state_kind:
+        'confirmation',
+
+      ready:
+        true,
+
+      requires_confirmation:
+        true,
+
+      summary,
+
+      operations,
+
+      actor_id:
+        actorId,
+
+      actor_name:
+        actorName
+    };
+
+
+    const saved =
+      await persistPendingConfirmation(
+        key,
+        pendingInterpretation,
+        actorId,
+        actorName
+      );
+
+
+    if (!saved.ok) {
+
+      return {
+        type:
+          'pending_persistence_failed',
+
+        message:
+          'Proses kayıt onayı kaydedilemedi. İşlem yapılmadı.'
+      };
+    }
+
+
+    pendingConfirmations.set(
+      key,
+      pendingInterpretation
+    );
+
+
+    return {
+      type:
+        'confirmation_required',
+
+      message:
+        summary +
+        '\n\nOnaylıyor musun?'
+    };
   }
+}
 
 
   // ----------------------------------------------------------
