@@ -2909,11 +2909,13 @@ Proses belli fakat saat eksikse veya üretim belirsizse:
                 content:
                   systemPrompt
               },
-              {
+
+         {
                 role:
                   'user',
 
-                'AÇIK ÜRETİMLER VE GERÇEK PROSESLER:',
+                content: [
+                  'AÇIK ÜRETİMLER VE GERÇEK PROSESLER:',
                   JSON.stringify(
                     candidates
                   ),
@@ -2926,12 +2928,12 @@ Proses belli fakat saat eksikse veya üretim belirsizse:
                   ),
                   '',
                   'KULLANICI MESAJI:',
-                
                   String(
                     text || ''
                   )
                 ].join('\n')
               }
+              
             ],
 
             reasoning: {
