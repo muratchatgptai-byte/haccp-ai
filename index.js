@@ -838,6 +838,7 @@ Desteklenen intent değerleri:
 get_batch
 start_production
 create_batch
+update_open_production_recorder
 record_process_measurement
 record_ph
 unknown
@@ -846,6 +847,7 @@ Yazma işlemleri:
 
 start_production
 create_batch
+update_open_production_recorder
 record_process_measurement
 record_ph
 
@@ -975,6 +977,28 @@ product_name = Ekşi Krema
 batch_count = 3
 production_date = bugünün tarihi
 start_time = 09:10
+
+
+update_open_production_recorder için data:
+
+{
+  "product_type": "",
+  "production_date": "",
+  "recorder_name": ""
+}
+
+update_open_production_recorder kuralları:
+
+- Kullanıcı açık üretimin "Kaydı yapan", "kaydı yapan kişi" veya üretim kaydı sorumlusu bilgisini değiştirmek istiyorsa bu intenti kullan.
+- recorder_name zorunludur.
+- product_type yalnızca kullanıcı açıkça hangi ürünü söylediğinde doldurulur.
+- sour_cream = Ekşi Krema
+- stp = Taze Peynir
+- dessert = Sütlü Tatlı
+- production_date yalnızca kullanıcı belirli bir üretim tarihi söylediyse doldurulur.
+- Ürün veya tarih söylenmediyse tahmin etme; alanı boş bırak. Sistem açık üretimler arasından güvenli şekilde çözecektir.
+- Kullanıcının verdiği kişi adını recorder_name alanına yaz.
+- Bu işlem yalnızca açık üretimin görünür "Kaydı yapan" alanını günceller.
 
 create_batch için data:
 
@@ -1760,11 +1784,12 @@ async function runHaccpAssistantTurn(
     workbook_directory:
       workbookDirectory,
 
-    write_capabilities: [
+   write_capabilities: [
       'yeni üretim açma',
       'açık üretime dolum/parti bağlama',
       'yeni bağımsız parti oluşturma',
       'açık üretime proses tamamlanma kaydı yazma',
+      'açık üretimin Kaydı yapan bilgisini güncelleme',
       'partiye proses ölçümü yazma',
       'partiye pH kaydı yazma'
     ]
@@ -2178,6 +2203,33 @@ if (intent === 'start_production') {
   );
 }
 
+
+  if (
+  intent ===
+  'update_open_production_recorder'
+) {
+
+  return callHaccpBridge(
+    'update_open_production_recorder',
+    {
+      operation_id:
+        interpretation.operation_id,
+
+      actor_id:
+        interpretation.actor_id,
+
+      actor_name:
+        interpretation.actor_name,
+
+      production_id:
+        data.production_id,
+
+      recorder_name:
+        data.recorder_name
+    }
+  );
+}
+  
 // ==========================================================
   // 6.5.4 - SAVE OPEN PRODUCTION MEASUREMENT
   // ==========================================================
@@ -4651,15 +4703,173 @@ if (
     };
   }
 
-
-  const interpretation =
+const interpretation =
     await interpretHaccpMessage(
       text,
       intakeDraft
     );
 
 
+  if (
+    interpretation?.intent ===
+    'update_open_production_recorder'
+  ) {
+
+    const requestedData =
+      interpretation.data || {};
+
+    const recorderName =
+      String(
+        requestedData.recorder_name ||
+        ''
+      ).trim();
+
+    if (!recorderName) {
+
+      return {
+        type: 'question',
+        question:
+          'Kaydı yapan kişi kim olacak?'
+      };
+    }
+
+
+    const productType =
+      String(
+        requestedData.product_type ||
+        ''
+      ).trim();
+
+    const productionDate =
+      String(
+        requestedData.production_date ||
+        ''
+      ).trim();
+
+    const lookup =
+      await callHaccpBridge(
+        'get_open_productions',
+        {
+          product_type:
+            productType
+        }
+      );
+
+    if (!lookup?.ok) {
+
+      return {
+        type: 'lookup_failed',
+        message:
+          lookup?.error ||
+          'Açık üretimler sorgulanamadı.'
+      };
+    }
+
+
+    const productions =
+      (
+        Array.isArray(
+          lookup.productions
+        )
+          ? lookup.productions
+          : []
+      ).filter(
+        production =>
+          !productionDate ||
+          String(
+            production
+              ?.production_date ||
+            ''
+          ).trim() ===
+          productionDate
+      );
+
+    if (!productions.length) {
+
+      return {
+        type: 'question',
+        question:
+          'Bu bilgiyle eşleşen açık üretim bulunamadı.'
+      };
+    }
+
+
+    if (productions.length > 1) {
+
+      const options =
+        productions.map(
+          (production, index) =>
+            `${index + 1}. ${production.product_name} | ${production.production_date} | ${production.batch_count} batch | ${production.start_time}`
+        );
+
+      return {
+        type:
+          'multiple_open_productions',
+        message:
+          'Birden fazla açık üretim var:\n' +
+          options.join('\n') +
+          '\nHangi üretimin Kaydı yapan bilgisini güncelleyeceğini belirt.'
+      };
+    }
+
+
+    const production =
+      productions[0];
+
+    const resolvedData = {
+      ...requestedData,
+      production_id:
+        production.production_id,
+      product_type:
+        production.product_type,
+      product_name:
+        production.product_name,
+      production_date:
+        production.production_date,
+      recorder_name:
+        recorderName
+    };
+
+    const summary =
+      `${production.production_date} ${production.product_name} açık üretiminde Kaydı yapan alanı "${recorderName}" olarak güncellenecek.`;
+
+    interpretation.ready =
+      true;
+
+    interpretation
+      .requires_confirmation =
+      true;
+
+    interpretation.summary =
+      summary;
+
+    interpretation.data =
+      resolvedData;
+
+    interpretation.operations = [
+      {
+        ...(
+          Array.isArray(
+            interpretation.operations
+          ) &&
+          interpretation.operations[0]
+            ? interpretation.operations[0]
+            : {}
+        ),
+        intent:
+          'update_open_production_recorder',
+        requires_confirmation:
+          true,
+        summary,
+        data:
+          resolvedData
+      }
+    ];
+  }
+
+
 if (!interpretation?.ready) {
+  
 
     if (
       !intakeDraft &&
